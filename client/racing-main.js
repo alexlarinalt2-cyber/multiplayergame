@@ -542,8 +542,8 @@ function syncMesh(physics, visual) {
 }
 
 // ── Chase camera (behind + above car so you can see it) ──────────────────────
-const _chaseOffset = new THREE.Vector3(0, 4.5, -10)  // behind & up
-const _chaseLook   = new THREE.Vector3(0, 1.0,  5)   // look slightly ahead
+const _chaseOffset = new THREE.Vector3(0, 4.5,  10)  // behind & up (model is rotated 180°)
+const _chaseLook   = new THREE.Vector3(0, 1.0, -5)   // look slightly ahead
 const _camTarget   = new THREE.Vector3()
 const _lookTarget  = new THREE.Vector3()
 
