@@ -236,12 +236,12 @@ addTrees()
 // ── Car Builder ───────────────────────────────────────────────────────────────
 function createCarPhysics(spawnPos, spawnAngle) {
   const chassisBody = new CANNON.Body({ mass: 180 })
-  // Low CoM, slightly forward (front-engine weight distribution ~55/45 F/R)
-  chassisBody.addShape(new CANNON.Box(new CANNON.Vec3(0.9, 0.28, 2.0)), new CANNON.Vec3(0, 0.12, 0.25))
+  // Low CoM, slightly forward → front-engine ~55/45 weight split
+  chassisBody.addShape(new CANNON.Box(new CANNON.Vec3(0.9, 0.26, 2.0)), new CANNON.Vec3(0, 0.10, 0.25))
   chassisBody.position.set(spawnPos.x, 1.0, spawnPos.z)
   chassisBody.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), spawnAngle)
-  chassisBody.linearDamping  = 0.05   // less drag — coasting feels real
-  chassisBody.angularDamping = 0.6    // damps yaw spin without feeling sluggish
+  chassisBody.linearDamping  = 0.04   // minimal drag — coasting feels real
+  chassisBody.angularDamping = 0.3    // low — lateral grip function handles stability
   world.addBody(chassisBody)
 
   const vehicle = new CANNON.RaycastVehicle({
@@ -251,35 +251,35 @@ function createCarPhysics(spawnPos, spawnAngle) {
     indexForwardAxis: 2
   })
 
-  // Front: stiffer for sharp turn-in; more friction load on braking dives
+  // Front: stiffer — resists dive under braking, quick turn-in response
   const frontWheel = {
     radius: 0.33,
     directionLocal: new CANNON.Vec3(0, -1, 0),
-    suspensionStiffness: 50,
-    suspensionRestLength: 0.35,
-    frictionSlip: 2.1,
-    dampingRelaxation: 2.5,
-    dampingCompression: 5.0,
-    maxSuspensionForce: 250000,
+    suspensionStiffness: 55,
+    suspensionRestLength: 0.33,
+    frictionSlip: 1.9,            // slightly lower → front breaks away first = understeer at limit
+    dampingRelaxation: 2.8,
+    dampingCompression: 5.2,
+    maxSuspensionForce: 260000,
     rollInfluence: 0.01,
     axleLocal: new CANNON.Vec3(-1, 0, 0),
-    maxSuspensionTravel: 0.25,
+    maxSuspensionTravel: 0.22,
     customSlidingRotationalSpeed: -30,
     useCustomSlidingRotationalSpeed: true
   }
 
-  // Rear: softer for stability and planted feel under power
+  // Rear: softer — planted under power, allows controlled slides with handbrake
   const rearWheel = {
     ...frontWheel,
-    suspensionStiffness: 38,
-    suspensionRestLength: 0.40,
-    frictionSlip: 2.5,           // more rear grip = neutral/understeer balance
+    suspensionStiffness: 42,
+    suspensionRestLength: 0.38,
+    frictionSlip: 2.3,
     dampingRelaxation: 2.2,
-    dampingCompression: 4.2,
+    dampingCompression: 4.4,
     rollInfluence: 0.008,
+    maxSuspensionTravel: 0.26,
   }
 
-  // FL, FR, RL, RR
   ;[
     { pos: new CANNON.Vec3(-0.8,  0,  1.55), opts: frontWheel },
     { pos: new CANNON.Vec3( 0.8,  0,  1.55), opts: frontWheel },
@@ -289,6 +289,40 @@ function createCarPhysics(spawnPos, spawnAngle) {
 
   vehicle.addToWorld(world)
   return { body: chassisBody, vehicle }
+}
+
+// ── Tire lateral grip ─────────────────────────────────────────────────────────
+// cannon-es RaycastVehicle has NO built-in lateral friction — this is the
+// standard fix: apply an impulse each frame opposing sideways slip.
+const _right = new CANNON.Vec3()
+function applyCarGrip(body, vehicle) {
+  // Skip if all wheels are airborne
+  if (!vehicle.wheelInfos.some(w => w.isInContact)) return
+
+  // Car's right vector in world space
+  body.quaternion.vmult(new CANNON.Vec3(1, 0, 0), _right)
+
+  // Lateral velocity = how fast the car is sliding sideways
+  const latVel   = body.velocity.dot(_right)
+  const slipMag  = Math.abs(latVel)
+
+  // Grip curve: strong at low slip, softens progressively beyond peak slip angle
+  // (mimics real tire Pacejka curve — grip peaks then degrades)
+  const grip     = 0.40 / (1.0 + slipMag * 0.22)
+  const impulse  = -latVel * body.mass * grip
+
+  body.applyImpulse(
+    new CANNON.Vec3(_right.x * impulse, 0, _right.z * impulse),
+    body.position
+  )
+
+  // Self-aligning torque: damp yaw spin proportional to slip
+  // (real tires create a moment that straightens the car when sliding)
+  body.angularVelocity.y *= Math.max(0.88, 1.0 - slipMag * 0.04)
+
+  // Downforce: speed² load keeps the car planted at high speed
+  const spd = body.velocity.length()
+  body.applyForce(new CANNON.Vec3(0, -spd * spd * 0.9, 0), body.position)
 }
 
 // Primitive fallback car (box-based)
@@ -712,6 +746,10 @@ function animate(now) {
 
   const dt = Math.min((now - prevTime) / 1000, 0.05)
   prevTime = now
+
+  // Apply tire lateral grip before physics step so forces integrate correctly
+  applyCarGrip(playerPhysics.body, playerPhysics.vehicle)
+  bots.forEach(b => applyCarGrip(b.physics.body, b.physics.vehicle))
 
   world.step(1 / 60, dt, 3)
 
