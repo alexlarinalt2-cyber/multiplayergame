@@ -503,8 +503,8 @@ function updatePlayer() {
   let engine = 0, brake = 0, steer = 0
   if (keys['KeyW'] || keys['ArrowUp'])    engine =  maxForce
   if (keys['KeyS'] || keys['ArrowDown']) { engine = -maxForce * 0.4; brake = brakeF }
-  if (keys['KeyA'] || keys['ArrowLeft'])  steer =  maxSteer
-  if (keys['KeyD'] || keys['ArrowRight']) steer = -maxSteer
+  if (keys['KeyA'] || keys['ArrowLeft'])  steer = -maxSteer
+  if (keys['KeyD'] || keys['ArrowRight']) steer =  maxSteer
 
   v.setSteeringValue(steer, 0); v.setSteeringValue(steer, 1)
   v.applyEngineForce(engine, 2); v.applyEngineForce(engine, 3)
