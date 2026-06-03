@@ -317,31 +317,29 @@ function makePrimitiveCar(color) {
   return { group: g, wheelMeshes }
 }
 
-// GLB car names to try (Racing Kit / Toy Car Kit filenames)
-const CAR_GLB_NAMES = ['car_blue', 'car_red', 'car_green', 'car_yellow']
-// Also try Toy Car Kit naming
-const TOY_CAR_GLB_NAMES = ['car_small_1', 'car_small_2', 'car_small_3', 'car_small_4']
+// Player = race car, bots = karts (all from Kenney Car Kit)
+const CAR_GLB_NAMES = ['race', 'kart-oobi', 'kart-oodi', 'kart-ooli']
 
 async function loadCarGLB(index) {
-  const names = [CAR_GLB_NAMES[index], TOY_CAR_GLB_NAMES[index]]
-  for (const name of names) {
-    const model = await loadGLB(`/assets/models/cars/${name}.glb`)
-    if (model) {
-      // Normalize scale to fit our physics body (~4 units long)
-      const box = new THREE.Box3().setFromObject(model)
-      const size = new THREE.Vector3()
-      box.getSize(size)
-      const scale = 4.0 / Math.max(size.x, size.z)
-      model.scale.setScalar(scale)
-      // Center at origin
-      const center = new THREE.Vector3()
-      box.getCenter(center)
-      model.position.sub(center.multiplyScalar(scale))
-      model.traverse(c => { if (c.isMesh) c.castShadow = true })
-      return model
-    }
-  }
-  return null
+  const model = await loadGLB(`/assets/models/cars/${CAR_GLB_NAMES[index]}.glb`)
+  if (!model) return null
+
+  // Normalize scale so the longest axis fits ~3.8 units
+  const box = new THREE.Box3().setFromObject(model)
+  const size = new THREE.Vector3()
+  box.getSize(size)
+  const scale = 3.8 / Math.max(size.x, size.z)
+  model.scale.setScalar(scale)
+
+  // Center horizontally, sit on y=0
+  const center = new THREE.Vector3()
+  box.getCenter(center)
+  model.position.x -= center.x * scale
+  model.position.z -= center.z * scale
+  model.position.y -= box.min.y * scale
+
+  model.traverse(c => { if (c.isMesh) c.castShadow = true })
+  return model
 }
 
 // ── Spawn positions ───────────────────────────────────────────────────────────
