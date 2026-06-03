@@ -292,37 +292,35 @@ function createCarPhysics(spawnPos, spawnAngle) {
 }
 
 // ── Tire lateral grip ─────────────────────────────────────────────────────────
-// cannon-es RaycastVehicle has NO built-in lateral friction — this is the
-// standard fix: apply an impulse each frame opposing sideways slip.
-const _right = new CANNON.Vec3()
+// cannon-es RaycastVehicle has NO built-in lateral friction — apply a per-frame
+// impulse opposing sideways slip. Pre-allocate all Vec3s to avoid GC pressure.
+const _gripLocalRight = new CANNON.Vec3(1, 0, 0)
+const _gripRight      = new CANNON.Vec3()
+const _gripImpulse    = new CANNON.Vec3()
+
 function applyCarGrip(body, vehicle) {
-  // Skip if all wheels are airborne
   if (!vehicle.wheelInfos.some(w => w.isInContact)) return
 
-  // Car's right vector in world space
-  body.quaternion.vmult(new CANNON.Vec3(1, 0, 0), _right)
+  body.quaternion.vmult(_gripLocalRight, _gripRight)
 
-  // Lateral velocity = how fast the car is sliding sideways
-  const latVel   = body.velocity.dot(_right)
-  const slipMag  = Math.abs(latVel)
+  const latVel  = body.velocity.dot(_gripRight)
+  const slipMag = Math.abs(latVel)
 
-  // Grip curve: strong at low slip, softens progressively beyond peak slip angle
-  // (mimics real tire Pacejka curve — grip peaks then degrades)
-  const grip     = 0.40 / (1.0 + slipMag * 0.22)
-  const impulse  = -latVel * body.mass * grip
+  // Pacejka-style curve: grip peaks at low slip, degrades progressively
+  const grip = 0.38 / (1.0 + slipMag * 0.22)
+  const mag  = -latVel * body.mass * grip
 
-  body.applyImpulse(
-    new CANNON.Vec3(_right.x * impulse, 0, _right.z * impulse),
-    body.position
-  )
+  _gripImpulse.x = _gripRight.x * mag
+  _gripImpulse.y = 0
+  _gripImpulse.z = _gripRight.z * mag
+  body.applyImpulse(_gripImpulse)   // no relativePoint = at CoM, no spurious torque
 
-  // Self-aligning torque: damp yaw spin proportional to slip
-  // (real tires create a moment that straightens the car when sliding)
+  // Self-aligning torque: damp yaw proportional to lateral slip
   body.angularVelocity.y *= Math.max(0.88, 1.0 - slipMag * 0.04)
 
-  // Downforce: speed² load keeps the car planted at high speed
+  // Downforce: write directly to force accumulator — zero allocation
   const spd = body.velocity.length()
-  body.applyForce(new CANNON.Vec3(0, -spd * spd * 0.9, 0), body.position)
+  body.force.y -= spd * spd * 0.5
 }
 
 // Primitive fallback car (box-based)
@@ -434,8 +432,8 @@ const startCenter = trackCurve.getPoint(0) // (0, 0, 55)
 
 // 2x2 grid: staggered left/right, 2 rows back along track
 function gridPos(col, row) {
-  const along = startTangent.clone().multiplyScalar(-row * 5)
-  const across = startRight.clone().multiplyScalar(col * 3)
+  const along = startTangent.clone().multiplyScalar(-row * 8)   // 8 units between rows (was 5)
+  const across = startRight.clone().multiplyScalar(col * 4.5)  // 4.5 units between cols (was 3)
   return {
     x: startCenter.x + along.x + across.x,
     z: startCenter.z + along.z + across.z
@@ -751,7 +749,7 @@ function animate(now) {
   applyCarGrip(playerPhysics.body, playerPhysics.vehicle)
   bots.forEach(b => applyCarGrip(b.physics.body, b.physics.vehicle))
 
-  world.step(1 / 60, dt, 3)
+  world.step(1 / 60, dt, 2)   // 2 substeps instead of 3 — faster, still stable
 
   if (raceStarted && !raceOver) {
     updatePlayer()
