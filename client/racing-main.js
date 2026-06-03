@@ -316,8 +316,8 @@ function makePrimitiveCar(color) {
   return { group: g, wheelMeshes }
 }
 
-// Player = race car, bots = karts (all from Kenney Car Kit)
-const CAR_GLB_NAMES = ['race', 'kart-oobi', 'kart-oodi', 'kart-ooli']
+// Player = race car, bots = sporty cars (no karts — karts have character heads baked in)
+const CAR_GLB_NAMES = ['race', 'race-future', 'sedan-sports', 'hatchback-sports']
 
 async function loadCarGLB(index) {
   const model = await loadGLB(`/assets/models/cars/${CAR_GLB_NAMES[index]}.glb`)
@@ -341,15 +341,32 @@ async function loadCarGLB(index) {
   return model
 }
 
-// ── Spawn positions ───────────────────────────────────────────────────────────
+// ── Spawn positions — computed from actual track geometry ─────────────────────
 const startTangent = trackCurve.getTangentAt(0)
 const startAngle = Math.atan2(startTangent.x, startTangent.z)
 
+// Right vector perpendicular to track at start
+const startRight = new THREE.Vector3()
+  .crossVectors(startTangent, new THREE.Vector3(0, 1, 0))
+  .normalize()
+
+const startCenter = trackCurve.getPoint(0) // (0, 0, 55)
+
+// 2x2 grid: staggered left/right, 2 rows back along track
+function gridPos(col, row) {
+  const along = startTangent.clone().multiplyScalar(-row * 5)
+  const across = startRight.clone().multiplyScalar(col * 3)
+  return {
+    x: startCenter.x + along.x + across.x,
+    z: startCenter.z + along.z + across.z
+  }
+}
+
 const gridOffsets = [
-  { x: -2, z: 55 },
-  { x:  2, z: 55 },
-  { x: -2, z: 60 },
-  { x:  2, z: 60 },
+  gridPos(-1, 0),
+  gridPos( 1, 0),
+  gridPos(-1, 1),
+  gridPos( 1, 1),
 ]
 
 const playerPhysics = createCarPhysics(gridOffsets[0], startAngle)
