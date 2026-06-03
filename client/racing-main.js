@@ -236,11 +236,12 @@ addTrees()
 // ── Car Builder ───────────────────────────────────────────────────────────────
 function createCarPhysics(spawnPos, spawnAngle) {
   const chassisBody = new CANNON.Body({ mass: 180 })
-  chassisBody.addShape(new CANNON.Box(new CANNON.Vec3(0.9, 0.38, 2.0)), new CANNON.Vec3(0, 0.28, 0))
+  // Low CoM, slightly forward (front-engine weight distribution ~55/45 F/R)
+  chassisBody.addShape(new CANNON.Box(new CANNON.Vec3(0.9, 0.28, 2.0)), new CANNON.Vec3(0, 0.12, 0.25))
   chassisBody.position.set(spawnPos.x, 1.0, spawnPos.z)
   chassisBody.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), spawnAngle)
-  chassisBody.linearDamping = 0.08
-  chassisBody.angularDamping = 0.45
+  chassisBody.linearDamping  = 0.05   // less drag — coasting feels real
+  chassisBody.angularDamping = 0.6    // damps yaw spin without feeling sluggish
   world.addBody(chassisBody)
 
   const vehicle = new CANNON.RaycastVehicle({
@@ -250,29 +251,41 @@ function createCarPhysics(spawnPos, spawnAngle) {
     indexForwardAxis: 2
   })
 
-  const baseWheel = {
+  // Front: stiffer for sharp turn-in; more friction load on braking dives
+  const frontWheel = {
     radius: 0.33,
     directionLocal: new CANNON.Vec3(0, -1, 0),
-    suspensionStiffness: 40,
-    suspensionRestLength: 0.38,
-    frictionSlip: 2.0,
-    dampingRelaxation: 2.3,
-    dampingCompression: 4.5,
+    suspensionStiffness: 50,
+    suspensionRestLength: 0.35,
+    frictionSlip: 2.1,
+    dampingRelaxation: 2.5,
+    dampingCompression: 5.0,
     maxSuspensionForce: 250000,
-    rollInfluence: 0.005,
+    rollInfluence: 0.01,
     axleLocal: new CANNON.Vec3(-1, 0, 0),
-    maxSuspensionTravel: 0.28,
+    maxSuspensionTravel: 0.25,
     customSlidingRotationalSpeed: -30,
     useCustomSlidingRotationalSpeed: true
   }
 
+  // Rear: softer for stability and planted feel under power
+  const rearWheel = {
+    ...frontWheel,
+    suspensionStiffness: 38,
+    suspensionRestLength: 0.40,
+    frictionSlip: 2.5,           // more rear grip = neutral/understeer balance
+    dampingRelaxation: 2.2,
+    dampingCompression: 4.2,
+    rollInfluence: 0.008,
+  }
+
   // FL, FR, RL, RR
   ;[
-    new CANNON.Vec3(-0.8,  0, 1.55),
-    new CANNON.Vec3( 0.8,  0, 1.55),
-    new CANNON.Vec3(-0.8,  0, -1.45),
-    new CANNON.Vec3( 0.8,  0, -1.45),
-  ].forEach(pos => vehicle.addWheel({ ...baseWheel, chassisConnectionPointLocal: pos }))
+    { pos: new CANNON.Vec3(-0.8,  0,  1.55), opts: frontWheel },
+    { pos: new CANNON.Vec3( 0.8,  0,  1.55), opts: frontWheel },
+    { pos: new CANNON.Vec3(-0.8,  0, -1.45), opts: rearWheel  },
+    { pos: new CANNON.Vec3( 0.8,  0, -1.45), opts: rearWheel  },
+  ].forEach(({ pos, opts }) => vehicle.addWheel({ ...opts, chassisConnectionPointLocal: pos }))
 
   vehicle.addToWorld(world)
   return { body: chassisBody, vehicle }
@@ -345,11 +358,12 @@ async function loadCarGLB(index) {
   const wheelNodes = []
   model.traverse(c => { if (c.name.toLowerCase().includes('wheel')) wheelNodes.push(c) })
 
-  const steerPivots = []
+  const steerPivots = [null, null]  // [FL/left index 0, FR/right index 1]
   const spinMeshes  = []
 
   for (const child of wheelNodes) {
-    const isSteer = child.name.toLowerCase().includes('front')
+    const name = child.name.toLowerCase()
+    const isSteer = name.includes('front')
     const parent = child.parent
     const savedPos = child.position.clone()
     child.position.set(0, 0, 0)
@@ -361,7 +375,10 @@ async function loadCarGLB(index) {
     parent.add(pivot)
 
     spinMeshes.push(child)
-    if (isSteer) steerPivots.push(pivot)
+    if (isSteer) {
+      // Kenney front-left (x>0 in model) = physics FL = wheel index 0
+      steerPivots[name.includes('left') ? 0 : 1] = pivot
+    }
   }
 
   // Apply 180° rotation AFTER extracting wheel refs so positions are in original model space
@@ -493,23 +510,51 @@ function getPosition() {
   return pos
 }
 
+// ── Ackermann steering geometry ───────────────────────────────────────────────
+// Returns [FL angle, FR angle] so the inner wheel cuts a tighter arc than the outer
+const WHEELBASE = 3.0
+const TRACK_W   = 1.6
+function ackermannAngles(steer) {
+  if (Math.abs(steer) < 0.001) return [0, 0]
+  const R     = WHEELBASE / Math.tan(Math.abs(steer))
+  const inner = Math.atan(WHEELBASE / (R - TRACK_W * 0.5)) * Math.sign(steer)
+  const outer = Math.atan(WHEELBASE / (R + TRACK_W * 0.5)) * Math.sign(steer)
+  // turning left (steer<0): FL=inner, FR=outer; turning right: FL=outer, FR=inner
+  return steer < 0 ? [inner, outer] : [outer, inner]
+}
+
 // ── Car update ────────────────────────────────────────────────────────────────
 function updatePlayer() {
   const v = playerPhysics.vehicle
-  const maxSteer = 0.44
-  const maxForce = 2400
-  const brakeF   = 50
+  const speed = playerPhysics.body.velocity.length()   // m/s
 
-  let engine = 0, brake = 0, steer = 0
-  if (keys['KeyW'] || keys['ArrowUp'])    engine =  maxForce
-  if (keys['KeyS'] || keys['ArrowDown']) { engine = -maxForce * 0.4; brake = brakeF }
-  if (keys['KeyA'] || keys['ArrowLeft'])  steer = -maxSteer
-  if (keys['KeyD'] || keys['ArrowRight']) steer =  maxSteer
+  // Speed-sensitive steering: full lock at standstill, narrows linearly with speed
+  const steerMax = 0.44 / (1 + speed * 0.045)
 
-  v.setSteeringValue(steer, 0); v.setSteeringValue(steer, 1)
-  v.applyEngineForce(engine, 2); v.applyEngineForce(engine, 3)
+  // Engine force: strong off the line, tapers to ~30% at top speed (~55 m/s)
+  const forceMax = 2600 * Math.max(0.3, 1 - speed / 55)
+  const brakeF   = 55
+
+  let engine = 0, brake = 0, steer = 0, handbrake = false
+  if (keys['KeyW'] || keys['ArrowUp'])    engine =  forceMax
+  if (keys['KeyS'] || keys['ArrowDown']) { engine = -forceMax * 0.35; brake = brakeF }
+  if (keys['KeyA'] || keys['ArrowLeft'])  steer = -steerMax
+  if (keys['KeyD'] || keys['ArrowRight']) steer =  steerMax
+  if (keys['Space']) handbrake = true
+
+  const [steerFL, steerFR] = ackermannAngles(steer)
+  v.setSteeringValue(steerFL, 0)
+  v.setSteeringValue(steerFR, 1)
+
+  v.applyEngineForce(engine, 2); v.applyEngineForce(engine, 3)  // rear-wheel drive
   v.setBrake(brake, 0); v.setBrake(brake, 1)
-  v.setBrake(brake * 0.5, 2); v.setBrake(brake * 0.5, 3)
+  v.setBrake(brake * 0.6, 2); v.setBrake(brake * 0.6, 3)
+
+  // Handbrake: lock rear wheels (weight transfers forward, tail can slide)
+  if (handbrake) {
+    v.applyEngineForce(0, 2); v.applyEngineForce(0, 3)
+    v.setBrake(180, 2); v.setBrake(180, 3)
+  }
 
   const p = playerPhysics.body.position
   const cur = nearestWaypoint(p.x, p.z)
@@ -550,9 +595,11 @@ function updateBot(bot) {
   const steer = Math.max(-0.5, Math.min(0.5, -cross * 1.8))
 
   const v = bot.physics.vehicle
-  const force = 2200 * bot.speed
-  v.setSteeringValue(steer, 0); v.setSteeringValue(steer, 1)
-  v.applyEngineForce(force, 2); v.applyEngineForce(force, 3)
+  const botSpeed  = bot.physics.body.velocity.length()
+  const botForce  = 2400 * bot.speed * Math.max(0.3, 1 - botSpeed / 55)
+  const [bFL, bFR] = ackermannAngles(steer)
+  v.setSteeringValue(bFL, 0); v.setSteeringValue(bFR, 1)
+  v.applyEngineForce(botForce, 2); v.applyEngineForce(botForce, 3)
   v.setBrake(0, 0); v.setBrake(0, 1); v.setBrake(0, 2); v.setBrake(0, 3)
 }
 
@@ -566,9 +613,11 @@ function syncMesh(physics, visual) {
   const speed = physics.body.velocity.length()
   const steer = physics.vehicle.wheelInfos[0]?.steering ?? 0
 
-  // GLB car: steer pivots + spin meshes
+  // GLB car: steer pivots indexed [0=FL, 1=FR] — each reads its own physics angle
   if (visual.steerPivots) {
-    visual.steerPivots.forEach(pivot => { pivot.rotation.y = -steer })
+    visual.steerPivots.forEach((pivot, i) => {
+      if (pivot) pivot.rotation.y = -(physics.vehicle.wheelInfos[i]?.steering ?? 0)
+    })
   }
   if (visual.spinMeshes) {
     visual.spinMeshes.forEach(mesh => { mesh.rotation.x -= speed * 0.04 })
