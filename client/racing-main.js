@@ -337,16 +337,7 @@ async function loadCarGLB(index) {
   model.position.z -= center.z * scale
   model.position.y -= box.min.y * scale
 
-  // Apply per-car color — fixes white models when external texture is missing
-  const tints = [0x1565c0, 0xc62828, 0x2e7d32, 0xe65100]
-  model.traverse(c => {
-    if (!c.isMesh) return
-    c.castShadow = true
-    c.material = c.material.clone()
-    c.material.color.set(tints[index])
-    c.material.roughness = 0.35
-    c.material.metalness = 0.6
-  })
+  model.traverse(c => { if (c.isMesh) c.castShadow = true })
   return model
 }
 
