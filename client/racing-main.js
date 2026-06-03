@@ -349,7 +349,7 @@ async function loadCarGLB(index) {
   const spinMeshes  = []
 
   for (const child of wheelNodes) {
-    const isSteer = child.name.toLowerCase().includes('back')
+    const isSteer = child.name.toLowerCase().includes('front')
     const parent = child.parent
     const savedPos = child.position.clone()
     child.position.set(0, 0, 0)
@@ -568,7 +568,7 @@ function syncMesh(physics, visual) {
 
   // GLB car: steer pivots + spin meshes
   if (visual.steerPivots) {
-    visual.steerPivots.forEach(pivot => { pivot.rotation.y = steer })
+    visual.steerPivots.forEach(pivot => { pivot.rotation.y = -steer })
   }
   if (visual.spinMeshes) {
     visual.spinMeshes.forEach(mesh => { mesh.rotation.x -= speed * 0.04 })
@@ -577,7 +577,7 @@ function syncMesh(physics, visual) {
   // Primitive fallback: steerG (index < 2 = front) + spinG inside
   if (visual.wheelMeshes && visual.wheelMeshes.length) {
     visual.wheelMeshes.forEach((steerG, i) => {
-      if (i < 2) steerG.rotation.y = steer
+      if (i < 2) steerG.rotation.y = -steer
       steerG.children[0].rotation.x += speed * 0.04
     })
   }
