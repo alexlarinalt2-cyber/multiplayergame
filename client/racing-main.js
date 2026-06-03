@@ -337,6 +337,8 @@ async function loadCarGLB(index) {
   model.position.z -= center.z * scale
   model.position.y -= box.min.y * scale
 
+  // Kenney cars face -Z; physics drives in +Z — rotate to match
+  model.rotation.y = Math.PI
   model.traverse(c => { if (c.isMesh) c.castShadow = true })
   return model
 }
