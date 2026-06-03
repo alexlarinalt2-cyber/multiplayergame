@@ -303,13 +303,15 @@ function makePrimitiveCar(color) {
   const wGeo = new THREE.CylinderGeometry(0.33, 0.33, 0.28, 14)
   const wMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 })
   const wheelMeshes = []
-  ;[[-0.96, 0, 1.5], [0.96, 0, 1.5], [-0.96, 0, -1.4], [0.96, 0, -1.4]].forEach(([x, y, z]) => {
-    const wg = new THREE.Group()
-    wg.add(new THREE.Mesh(wGeo, wMat))
-    wg.rotation.z = Math.PI / 2
-    wg.position.set(x, y, z)
-    g.add(wg)
-    wheelMeshes.push(wg)
+  ;[[-0.96, 0, 1.5], [0.96, 0, 1.5], [-0.96, 0, -1.4], [0.96, 0, -1.4]].forEach(([x, y, z], i) => {
+    const steerG = new THREE.Group()  // steers (front only)
+    steerG.position.set(x, y, z)
+    const spinG = new THREE.Group()  // spins (all)
+    spinG.rotation.z = Math.PI / 2
+    spinG.add(new THREE.Mesh(wGeo, wMat))
+    steerG.add(spinG)
+    g.add(steerG)
+    wheelMeshes.push(steerG)         // steerG.children[0] = spinG
   })
 
   scene.add(g)
@@ -323,24 +325,49 @@ async function loadCarGLB(index) {
   const model = await loadGLB(`/assets/models/cars/${CAR_GLB_NAMES[index]}.glb`)
   if (!model) return null
 
-  // Normalize scale so the longest axis fits ~3.8 units
   const box = new THREE.Box3().setFromObject(model)
   const size = new THREE.Vector3()
   box.getSize(size)
   const scale = 3.8 / Math.max(size.x, size.z)
   model.scale.setScalar(scale)
 
-  // Center horizontally, sit on y=0
   const center = new THREE.Vector3()
   box.getCenter(center)
   model.position.x -= center.x * scale
   model.position.z -= center.z * scale
   model.position.y -= box.min.y * scale
 
-  // Kenney cars face -Z; physics drives in +Z — rotate to match
-  model.rotation.y = Math.PI
   model.traverse(c => { if (c.isMesh) c.castShadow = true })
-  return model
+
+  // Collect wheel nodes, then wrap them in pivot groups for steering/spin animation.
+  // Kenney labels back wheels "wheel-back-*" — after our 180° rotation these are the
+  // physics front wheels (the ones that actually steer).
+  const wheelNodes = []
+  model.traverse(c => { if (c.name.toLowerCase().includes('wheel')) wheelNodes.push(c) })
+
+  const steerPivots = []
+  const spinMeshes  = []
+
+  for (const child of wheelNodes) {
+    const isSteer = child.name.toLowerCase().includes('back')
+    const parent = child.parent
+    const savedPos = child.position.clone()
+    child.position.set(0, 0, 0)
+    parent.remove(child)
+
+    const pivot = new THREE.Group()
+    pivot.position.copy(savedPos)
+    pivot.add(child)
+    parent.add(pivot)
+
+    spinMeshes.push(child)
+    if (isSteer) steerPivots.push(pivot)
+  }
+
+  // Apply 180° rotation AFTER extracting wheel refs so positions are in original model space
+  model.rotation.y = Math.PI
+
+  return { model, steerPivots, spinMeshes }
 }
 
 // ── Spawn positions — computed from actual track geometry ─────────────────────
@@ -387,12 +414,13 @@ const bots = BOT_SPEEDS.map((speed, i) => ({
 // Async: swap primitives for GLB models once loaded (no blocking)
 ;(async () => {
   for (let i = 0; i < 4; i++) {
-    const model = await loadCarGLB(i)
-    if (!model) continue
+    const result = await loadCarGLB(i)
+    if (!result) continue
+    const { model, steerPivots, spinMeshes } = result
     const wrapper = new THREE.Group()
     wrapper.add(model)
     scene.add(wrapper)
-    const newVisual = { group: wrapper, wheelMeshes: [] }
+    const newVisual = { group: wrapper, wheelMeshes: [], steerPivots, spinMeshes }
     if (i === 0) {
       scene.remove(playerVisual.group)
       playerVisual = newVisual
@@ -535,9 +563,23 @@ function syncMesh(physics, visual) {
   visual.group.position.set(p.x, p.y - 0.32, p.z)
   visual.group.quaternion.set(q.x, q.y, q.z, q.w)
 
-  if (visual.wheelMeshes.length) {
-    const speed = physics.body.velocity.length()
-    visual.wheelMeshes.forEach(w => { w.rotation.x += speed * 0.04 })
+  const speed = physics.body.velocity.length()
+  const steer = physics.vehicle.wheelInfos[0]?.steering ?? 0
+
+  // GLB car: steer pivots + spin meshes
+  if (visual.steerPivots) {
+    visual.steerPivots.forEach(pivot => { pivot.rotation.y = steer })
+  }
+  if (visual.spinMeshes) {
+    visual.spinMeshes.forEach(mesh => { mesh.rotation.x -= speed * 0.04 })
+  }
+
+  // Primitive fallback: steerG (index < 2 = front) + spinG inside
+  if (visual.wheelMeshes && visual.wheelMeshes.length) {
+    visual.wheelMeshes.forEach((steerG, i) => {
+      if (i < 2) steerG.rotation.y = steer
+      steerG.children[0].rotation.x += speed * 0.04
+    })
   }
 }
 
