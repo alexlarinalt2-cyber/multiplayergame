@@ -337,7 +337,16 @@ async function loadCarGLB(index) {
   model.position.z -= center.z * scale
   model.position.y -= box.min.y * scale
 
-  model.traverse(c => { if (c.isMesh) c.castShadow = true })
+  // Apply per-car color — fixes white models when external texture is missing
+  const tints = [0x1565c0, 0xc62828, 0x2e7d32, 0xe65100]
+  model.traverse(c => {
+    if (!c.isMesh) return
+    c.castShadow = true
+    c.material = c.material.clone()
+    c.material.color.set(tints[index])
+    c.material.roughness = 0.35
+    c.material.metalness = 0.6
+  })
   return model
 }
 
@@ -522,21 +531,22 @@ function syncMesh(physics, visual) {
   }
 }
 
-// ── Hood camera ───────────────────────────────────────────────────────────────
-const _hoodLocal = new THREE.Vector3(0, 0.85, 1.7)
-const _lookLocal = new THREE.Vector3(0, 0.6, 22)
-const _camTarget = new THREE.Vector3()
-const _lookTarget = new THREE.Vector3()
+// ── Chase camera (behind + above car so you can see it) ──────────────────────
+const _chaseOffset = new THREE.Vector3(0, 4.5, -10)  // behind & up
+const _chaseLook   = new THREE.Vector3(0, 1.0,  5)   // look slightly ahead
+const _camTarget   = new THREE.Vector3()
+const _lookTarget  = new THREE.Vector3()
 
 function updateCamera() {
   const p = playerPhysics.body.position
   const q = playerPhysics.body.quaternion
   const tq = new THREE.Quaternion(q.x, q.y, q.z, q.w)
 
-  _camTarget.copy(_hoodLocal).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
-  _lookTarget.copy(_lookLocal).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
+  _camTarget.copy(_chaseOffset).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
+  _lookTarget.copy(_chaseLook).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
 
-  camera.position.lerp(_camTarget, 0.35)
+  // Smooth follow — lower lerp = floatier, higher = snappier
+  camera.position.lerp(_camTarget, 0.08)
   camera.lookAt(_lookTarget)
 }
 
