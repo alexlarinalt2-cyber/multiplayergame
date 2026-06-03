@@ -1,7 +1,6 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-
-const CANNON = window.CANNON
+import * as CANNON from 'cannon-es'
 const gltfLoader = new GLTFLoader()
 
 // Load a GLB, resolve with scene or null on failure
