@@ -1,6 +1,15 @@
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
 const CANNON = window.CANNON
+const gltfLoader = new GLTFLoader()
+
+// Load a GLB, resolve with scene or null on failure
+function loadGLB(path) {
+  return new Promise(resolve => {
+    gltfLoader.load(path, gltf => resolve(gltf.scene), undefined, () => resolve(null))
+  })
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const TOTAL_LAPS = 3
@@ -270,90 +279,113 @@ function createCarPhysics(spawnPos, spawnAngle) {
   return { body: chassisBody, vehicle }
 }
 
-function createCarMesh(color) {
+// Primitive fallback car (box-based)
+function makePrimitiveCar(color) {
   const g = new THREE.Group()
 
-  // Body
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(1.76, 0.48, 4.0),
     new THREE.MeshStandardMaterial({ color, roughness: 0.25, metalness: 0.7 })
   )
   body.position.y = 0.3; body.castShadow = true; g.add(body)
 
-  // Cabin glass
   const cabin = new THREE.Mesh(
     new THREE.BoxGeometry(1.45, 0.42, 1.85),
     new THREE.MeshStandardMaterial({ color: 0x112244, roughness: 0.1, metalness: 0.3, transparent: true, opacity: 0.85 })
   )
   cabin.position.set(0, 0.75, -0.25); cabin.castShadow = true; g.add(cabin)
 
-  // Spoiler
-  const spoilerBlade = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6, 0.06, 0.4),
-    new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.4, metalness: 0.8 })
-  )
-  spoilerBlade.position.set(0, 0.82, -1.85); g.add(spoilerBlade)
-
-  // Wheels
-  const wGeo = new THREE.CylinderGeometry(0.33, 0.33, 0.28, 18)
-  const wMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 })
-  const rimMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.9, roughness: 0.2 })
-  const rimGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.29, 10)
-  const wheelMeshes = []
-  ;[[-0.96, 0, 1.5], [0.96, 0, 1.5], [-0.96, 0, -1.4], [0.96, 0, -1.4]].forEach(([x, y, z]) => {
-    const wg = new THREE.Group()
-    const tire = new THREE.Mesh(wGeo, wMat); tire.castShadow = true
-    const rim = new THREE.Mesh(rimGeo, rimMat)
-    wg.add(tire, rim)
-    wg.rotation.z = Math.PI / 2
-    wg.position.set(x, y, z)
-    g.add(wg)
-    wheelMeshes.push(wg)
-  })
-
-  // Headlights
   const hlMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffcc, emissiveIntensity: 2 })
   ;[-0.55, 0.55].forEach(x => {
     const hl = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 0.06), hlMat)
     hl.position.set(x, 0.32, 1.97); g.add(hl)
   })
 
-  // Taillights
-  const tlMat = new THREE.MeshStandardMaterial({ color: 0xff2200, emissive: 0xff1100, emissiveIntensity: 1.5 })
-  ;[-0.55, 0.55].forEach(x => {
-    const tl = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.1, 0.05), tlMat)
-    tl.position.set(x, 0.32, -1.98); g.add(tl)
+  const wGeo = new THREE.CylinderGeometry(0.33, 0.33, 0.28, 14)
+  const wMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 })
+  const wheelMeshes = []
+  ;[[-0.96, 0, 1.5], [0.96, 0, 1.5], [-0.96, 0, -1.4], [0.96, 0, -1.4]].forEach(([x, y, z]) => {
+    const wg = new THREE.Group()
+    wg.add(new THREE.Mesh(wGeo, wMat))
+    wg.rotation.z = Math.PI / 2
+    wg.position.set(x, y, z)
+    g.add(wg)
+    wheelMeshes.push(wg)
   })
 
   scene.add(g)
   return { group: g, wheelMeshes }
 }
 
-// ── Spawn positions (grid start) ──────────────────────────────────────────────
-// Track at z=55 faces north (towards z=48 next waypoint)
-// Compute angle at start
+// GLB car names to try (Racing Kit / Toy Car Kit filenames)
+const CAR_GLB_NAMES = ['car_blue', 'car_red', 'car_green', 'car_yellow']
+// Also try Toy Car Kit naming
+const TOY_CAR_GLB_NAMES = ['car_small_1', 'car_small_2', 'car_small_3', 'car_small_4']
+
+async function loadCarGLB(index) {
+  const names = [CAR_GLB_NAMES[index], TOY_CAR_GLB_NAMES[index]]
+  for (const name of names) {
+    const model = await loadGLB(`/assets/models/cars/${name}.glb`)
+    if (model) {
+      // Normalize scale to fit our physics body (~4 units long)
+      const box = new THREE.Box3().setFromObject(model)
+      const size = new THREE.Vector3()
+      box.getSize(size)
+      const scale = 4.0 / Math.max(size.x, size.z)
+      model.scale.setScalar(scale)
+      // Center at origin
+      const center = new THREE.Vector3()
+      box.getCenter(center)
+      model.position.sub(center.multiplyScalar(scale))
+      model.traverse(c => { if (c.isMesh) c.castShadow = true })
+      return model
+    }
+  }
+  return null
+}
+
+// ── Spawn positions ───────────────────────────────────────────────────────────
 const startTangent = trackCurve.getTangentAt(0)
 const startAngle = Math.atan2(startTangent.x, startTangent.z)
 
 const gridOffsets = [
-  { x: -2,  z: 55 },
-  { x:  2,  z: 55 },
-  { x: -2,  z: 60 },
-  { x:  2,  z: 60 },
+  { x: -2, z: 55 },
+  { x:  2, z: 55 },
+  { x: -2, z: 60 },
+  { x:  2, z: 60 },
 ]
 
 const playerPhysics = createCarPhysics(gridOffsets[0], startAngle)
-const playerVisual  = createCarMesh(CAR_COLORS[0])
+let playerVisual = makePrimitiveCar(CAR_COLORS[0])
 
 const bots = BOT_SPEEDS.map((speed, i) => ({
-  physics: createCarPhysics(gridOffsets[i + 1], startAngle),
-  visual:  createCarMesh(CAR_COLORS[i + 1]),
-  wpIdx:   0,
-  lap:     0,
+  physics:  createCarPhysics(gridOffsets[i + 1], startAngle),
+  visual:   makePrimitiveCar(CAR_COLORS[i + 1]),
+  wpIdx:    0,
+  lap:      0,
   speed,
   finished: false,
   prevWpIdx: 0
 }))
+
+// Async: swap primitives for GLB models once loaded (no blocking)
+;(async () => {
+  for (let i = 0; i < 4; i++) {
+    const model = await loadCarGLB(i)
+    if (!model) continue
+    const wrapper = new THREE.Group()
+    wrapper.add(model)
+    scene.add(wrapper)
+    const newVisual = { group: wrapper, wheelMeshes: [] }
+    if (i === 0) {
+      scene.remove(playerVisual.group)
+      playerVisual = newVisual
+    } else {
+      scene.remove(bots[i - 1].visual.group)
+      bots[i - 1].visual = newVisual
+    }
+  }
+})()
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {}
@@ -481,16 +513,16 @@ function updateBot(bot) {
 }
 
 // ── Visual sync ───────────────────────────────────────────────────────────────
-const _q = new THREE.Quaternion()
 function syncMesh(physics, visual) {
   const p = physics.body.position
   const q = physics.body.quaternion
   visual.group.position.set(p.x, p.y - 0.32, p.z)
   visual.group.quaternion.set(q.x, q.y, q.z, q.w)
 
-  // spin wheels based on speed
-  const speed = physics.body.velocity.length()
-  visual.wheelMeshes.forEach(w => { w.rotation.x += speed * 0.04 })
+  if (visual.wheelMeshes.length) {
+    const speed = physics.body.velocity.length()
+    visual.wheelMeshes.forEach(w => { w.rotation.x += speed * 0.04 })
+  }
 }
 
 // ── Hood camera ───────────────────────────────────────────────────────────────
