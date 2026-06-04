@@ -19,13 +19,12 @@ const BOT_NAMES = ['BOT REX', 'BOT ZEN', 'BOT KAI']
 const BOT_SPEEDS = [1.0, 0.95, 1.05]
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ antialias: true })
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+const renderer = new THREE.WebGLRenderer({ antialias: false })   // antialias off = big GPU win
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))   // cap at 1.5, not 2
 renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFSoftShadowMap
-renderer.toneMapping = THREE.ACESFilmicToneMapping
-renderer.toneMappingExposure = 1.1
+renderer.shadowMap.type = THREE.PCFShadowMap                      // PCF not PCFSoft (4x cheaper)
+renderer.toneMapping = THREE.LinearToneMapping                    // cheaper than ACES
 document.body.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
@@ -45,23 +44,17 @@ scene.add(new THREE.AmbientLight(0xc8d8f0, 0.9))
 const sun = new THREE.DirectionalLight(0xfff0d0, 2.2)
 sun.position.set(60, 90, 40)
 sun.castShadow = true
-sun.shadow.mapSize.set(2048, 2048)
+sun.shadow.mapSize.set(1024, 1024)                               // 1024 not 2048 (4x fewer pixels)
 sun.shadow.camera.near = 1
-sun.shadow.camera.far = 300
-;[-120, 120].forEach(v => {
-  sun.shadow.camera.left = v < 0 ? v : sun.shadow.camera.left
-  sun.shadow.camera.right = v > 0 ? v : sun.shadow.camera.right
-  sun.shadow.camera.top = v > 0 ? v : sun.shadow.camera.top
-  sun.shadow.camera.bottom = v < 0 ? v : sun.shadow.camera.bottom
-})
-sun.shadow.camera.left = -120; sun.shadow.camera.right = 120
-sun.shadow.camera.top = 120; sun.shadow.camera.bottom = -120
+sun.shadow.camera.far = 250
+sun.shadow.camera.left = -90; sun.shadow.camera.right = 90
+sun.shadow.camera.top  =  90; sun.shadow.camera.bottom = -90
 scene.add(sun)
 
 // ── Physics World ─────────────────────────────────────────────────────────────
 const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -20, 0) })
 world.broadphase = new CANNON.SAPBroadphase(world)
-world.solver.iterations = 12
+world.solver.iterations = 8
 world.defaultContactMaterial.friction = 0.4
 world.defaultContactMaterial.restitution = 0.1
 
@@ -205,20 +198,18 @@ scene.add(ground)
 function addTrees() {
   const trunkGeo = new THREE.CylinderGeometry(0.2, 0.3, 1.5, 6)
   const leafGeo = new THREE.ConeGeometry(1.2, 2.5, 7)
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5d4037 })
-  const leafMat = new THREE.MeshStandardMaterial({ color: 0x2e7d32 })
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5d4037 })  // Lambert = no specular, cheaper
+  const leafMat  = new THREE.MeshLambertMaterial({ color: 0x2e7d32 })
   const treePositions = []
-  for (let a = 0; a < Math.PI * 2; a += 0.35) {
+  for (let a = 0; a < Math.PI * 2; a += 0.5) {                        // fewer trees (0.35→0.5)
     const r = 72 + Math.sin(a * 3) * 5
     treePositions.push([Math.cos(a) * r, Math.sin(a) * r])
   }
   treePositions.forEach(([x, z]) => {
     const t = new THREE.Group()
-    const trunk = new THREE.Mesh(trunkGeo, trunkMat)
-    trunk.castShadow = true
+    const trunk = new THREE.Mesh(trunkGeo, trunkMat)                   // no castShadow on trees
     const leaves = new THREE.Mesh(leafGeo, leafMat)
     leaves.position.y = 2.2
-    leaves.castShadow = true
     t.add(trunk, leaves)
     t.position.set(x, 0.75, z)
     t.rotation.y = Math.random() * Math.PI
@@ -516,6 +507,11 @@ function formatTime(ms) {
   return `${m}:${String(s).padStart(2,'0')}.${String(cs).padStart(2,'0')}`
 }
 
+// Pre-allocated objects reused every frame to avoid GC pressure
+const _botFwd    = new THREE.Vector3()
+const _botTarget = new THREE.Vector3()
+const _botQ      = new THREE.Quaternion()
+
 // ── Waypoint helpers ──────────────────────────────────────────────────────────
 function nearestWaypoint(px, pz) {
   let best = 0, bestD = Infinity
@@ -619,10 +615,9 @@ function updateBot(bot) {
   }
 
   const quat = bot.physics.body.quaternion
-  const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(
-    new THREE.Quaternion(quat.x, quat.y, quat.z, quat.w)
-  )
-  const toTarget = new THREE.Vector3(dx, 0, dz).normalize()
+  _botFwd.set(0, 0, 1).applyQuaternion(_botQ.set(quat.x, quat.y, quat.z, quat.w))
+  _botTarget.set(dx, 0, dz).normalize()
+  const fwd = _botFwd, toTarget = _botTarget
   const cross = fwd.x * toTarget.z - fwd.z * toTarget.x
   const steer = Math.max(-0.5, Math.min(0.5, -cross * 1.8))
 
