@@ -62,10 +62,17 @@
       overflow: hidden;
     }
     #minimap canvas { width: 100%; height: 100%; }
+
+    #vignette {
+      position: fixed; inset: 0; pointer-events: none; z-index: 8;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.82) 100%);
+      opacity: 0.28; transition: opacity 0.15s;
+    }
   </style>
 </head>
 <body>
 
+<div id="vignette"></div>
 <div id="hud">
   <div id="race-info">
     <div class="info-box"><div class="info-label">Lap</div><div class="info-value" id="lap">1 / 3</div></div>
@@ -86,7 +93,12 @@
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
     "three/examples/jsm/loaders/GLTFLoader.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
-    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
+    "three/examples/jsm/environments/RoomEnvironment.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/environments/RoomEnvironment.js",
+    "three/examples/jsm/objects/Sky.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/objects/Sky.js",
+    "three/examples/jsm/postprocessing/EffectComposer.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js",
+    "three/examples/jsm/postprocessing/RenderPass.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js",
+    "three/examples/jsm/postprocessing/UnrealBloomPass.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js"
   }
 }
 </script>

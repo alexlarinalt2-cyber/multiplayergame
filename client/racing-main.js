@@ -1,6 +1,11 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import * as CANNON from 'cannon-es'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
+import { Sky } from 'three/examples/jsm/objects/Sky.js'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 const gltfLoader = new GLTFLoader()
 
 // Load a GLB, resolve with scene or null on failure
@@ -19,37 +24,68 @@ const BOT_NAMES = ['BOT REX', 'BOT ZEN', 'BOT KAI']
 const BOT_SPEEDS = [1.0, 0.95, 1.05]
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ antialias: false })   // antialias off = big GPU win
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))   // cap at 1.5, not 2
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
 renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFShadowMap                      // PCF not PCFSoft (4x cheaper)
-renderer.toneMapping = THREE.LinearToneMapping                    // cheaper than ACES
+renderer.shadowMap.type = THREE.PCFShadowMap
+renderer.toneMapping = THREE.ACESFilmicToneMapping
+renderer.toneMappingExposure = 0.85
+renderer.outputColorSpace = THREE.SRGBColorSpace
 document.body.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0x6ab4e8)
-scene.fog = new THREE.FogExp2(0x8ac8f0, 0.007)
+scene.fog = new THREE.Fog(0xc9e8ff, 120, 400)  // linear fog — less aggressive than exponential
 
 const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 500)
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
+  composer.setSize(window.innerWidth, window.innerHeight)
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
 })
 
+// ── Sky ───────────────────────────────────────────────────────────────────────
+const sky = new Sky()
+sky.scale.setScalar(450)
+scene.add(sky)
+const skyUni = sky.material.uniforms
+skyUni['turbidity'].value      = 2.5
+skyUni['rayleigh'].value       = 1.8
+skyUni['mieCoefficient'].value = 0.004
+skyUni['mieDirectionalG'].value = 0.82
+const _sunDir = new THREE.Vector3()
+_sunDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(84), THREE.MathUtils.degToRad(200))
+skyUni['sunPosition'].value.copy(_sunDir)
+
 // ── Lighting ──────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0xc8d8f0, 0.9))
-const sun = new THREE.DirectionalLight(0xfff0d0, 2.2)
-sun.position.set(60, 90, 40)
+scene.add(new THREE.AmbientLight(0xd0e8ff, 1.2))
+const sun = new THREE.DirectionalLight(0xfff4e0, 2.8)
+sun.position.copy(_sunDir).multiplyScalar(100)
 sun.castShadow = true
-sun.shadow.mapSize.set(1024, 1024)                               // 1024 not 2048 (4x fewer pixels)
+sun.shadow.mapSize.set(1024, 1024)
 sun.shadow.camera.near = 1
-sun.shadow.camera.far = 250
-sun.shadow.camera.left = -90; sun.shadow.camera.right = 90
+sun.shadow.camera.far  = 250
+sun.shadow.camera.left = -90; sun.shadow.camera.right  = 90
 sun.shadow.camera.top  =  90; sun.shadow.camera.bottom = -90
 scene.add(sun)
+
+// ── Environment map (IBL reflections on metallic cars) ────────────────────────
+const pmrem = new THREE.PMREMGenerator(renderer)
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+pmrem.dispose()
+
+// ── Post-processing ───────────────────────────────────────────────────────────
+const composer = new EffectComposer(renderer)
+composer.addPass(new RenderPass(scene, camera))
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2),
+  0.45,   // strength  — subtle glow on headlights + sky horizon
+  0.5,    // radius
+  0.82    // threshold — only emissive/very bright surfaces bloom
+)
+composer.addPass(bloomPass)
 
 // ── Physics World ─────────────────────────────────────────────────────────────
 const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -20, 0) })
@@ -157,22 +193,33 @@ function buildEdgeStripes(side) {
   return mesh
 }
 
-// Center dashed line
+// Center dashed line — single merged BufferGeometry (was 50 separate meshes = 50 draw calls)
 function buildCenterDash() {
   const pts = trackCurve.getPoints(300)
-  const group = new THREE.Group()
+  const verts = [], idx = []
+  let vi = 0
   for (let i = 0; i < 300; i += 6) {
-    const p = pts[i]
-    const geo = new THREE.PlaneGeometry(0.18, 2.2)
-    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 })
-    const mesh = new THREE.Mesh(geo, mat)
-    mesh.rotation.x = -Math.PI / 2
-    mesh.position.set(p.x, 0.03, p.z)
+    const p  = pts[i]
     const pn = pts[(i + 1) % pts.length]
-    mesh.rotation.z = -Math.atan2(pn.x - p.x, pn.z - p.z)
-    group.add(mesh)
+    const tan   = new THREE.Vector3().subVectors(pn, p).normalize()
+    const right = new THREE.Vector3().crossVectors(tan, new THREE.Vector3(0, 1, 0)).normalize()
+    const hw = 0.09, hl = 1.1
+    verts.push(
+      p.x + (-right.x * hw - tan.x * hl), 0.035, p.z + (-right.z * hw - tan.z * hl),
+      p.x + ( right.x * hw - tan.x * hl), 0.035, p.z + ( right.z * hw - tan.z * hl),
+      p.x + ( right.x * hw + tan.x * hl), 0.035, p.z + ( right.z * hw + tan.z * hl),
+      p.x + (-right.x * hw + tan.x * hl), 0.035, p.z + (-right.z * hw + tan.z * hl)
+    )
+    idx.push(vi, vi+1, vi+2,  vi, vi+2, vi+3)
+    vi += 4
   }
-  return group
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
+  geo.setIndex(idx)
+  geo.computeVertexNormals()
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }))
+  mesh.receiveShadow = false
+  return mesh
 }
 
 // Start/finish line
@@ -193,6 +240,33 @@ const ground = new THREE.Mesh(
 ground.rotation.x = -Math.PI / 2
 ground.receiveShadow = true
 scene.add(ground)
+
+// Track barriers — InstancedMesh so 240 barriers = 1 draw call
+function buildBarriers() {
+  const pts   = trackCurve.getPoints(120)
+  const geo   = new THREE.BoxGeometry(2.6, 0.9, 0.28)
+  const mat   = new THREE.MeshStandardMaterial({ color: 0xbbbbbb, roughness: 0.88, metalness: 0.05 })
+  const dummy = new THREE.Object3D()
+  const inst  = new THREE.InstancedMesh(geo, mat, pts.length * 2)
+  inst.castShadow = false; inst.receiveShadow = false
+  let k = 0
+  const _t = new THREE.Vector3(), _r = new THREE.Vector3()
+  pts.forEach((p, i) => {
+    const pn = pts[(i + 1) % pts.length]
+    _t.subVectors(pn, p).normalize()
+    _r.crossVectors(_t, new THREE.Vector3(0, 1, 0)).normalize()
+    const angle = Math.atan2(_t.x, _t.z)
+    const hw = TRACK_WIDTH / 2 + 0.6
+    for (const s of [-1, 1]) {
+      dummy.position.set(p.x + _r.x * hw * s, 0.45, p.z + _r.z * hw * s)
+      dummy.rotation.y = angle
+      dummy.updateMatrix()
+      inst.setMatrixAt(k++, dummy.matrix)
+    }
+  })
+  inst.instanceMatrix.needsUpdate = true
+  scene.add(inst)
+}
 
 // Decorative trees around track
 function addTrees() {
@@ -222,6 +296,7 @@ scene.add(buildEdgeStripes('left'))
 scene.add(buildEdgeStripes('right'))
 scene.add(buildCenterDash())
 scene.add(buildStartLine())
+buildBarriers()
 addTrees()
 
 // ── Car Builder ───────────────────────────────────────────────────────────────
@@ -320,7 +395,7 @@ function makePrimitiveCar(color) {
 
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(1.76, 0.48, 4.0),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.25, metalness: 0.7 })
+    new THREE.MeshStandardMaterial({ color, roughness: 0.12, metalness: 0.88, envMapIntensity: 2 })
   )
   body.position.y = 0.3; body.castShadow = true; g.add(body)
 
@@ -373,7 +448,16 @@ async function loadCarGLB(index) {
   model.position.z -= center.z * scale
   model.position.y -= box.min.y * scale
 
-  model.traverse(c => { if (c.isMesh) c.castShadow = true })
+  model.traverse(c => {
+    if (!c.isMesh) return
+    c.castShadow = true
+    if (c.material) {
+      // Boost metallic car-paint look — picks up scene.environment reflections
+      c.material.roughness      = Math.min(c.material.roughness,  0.28)
+      c.material.metalness      = Math.max(c.material.metalness,  0.65)
+      c.material.envMapIntensity = 1.8
+    }
+  })
 
   // Collect wheel nodes, then wrap them in pivot groups for steering/spin animation.
   // Kenney labels back wheels "wheel-back-*" — after our 180° rotation these are the
@@ -665,6 +749,8 @@ const _chaseLook   = new THREE.Vector3(0, 1.0, -5)   // look slightly ahead
 const _camTarget   = new THREE.Vector3()
 const _lookTarget  = new THREE.Vector3()
 
+const vignetteEl = document.getElementById('vignette')
+
 function updateCamera() {
   const p = playerPhysics.body.position
   const q = playerPhysics.body.quaternion
@@ -673,9 +759,16 @@ function updateCamera() {
   _camTarget.copy(_chaseOffset).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
   _lookTarget.copy(_chaseLook).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
 
-  // Smooth follow — lower lerp = floatier, higher = snappier
   camera.position.lerp(_camTarget, 0.08)
   camera.lookAt(_lookTarget)
+
+  // Speed-based FOV: widens at high speed for a rush sensation
+  const spd = playerPhysics.body.velocity.length()
+  camera.fov = THREE.MathUtils.lerp(camera.fov, 72 + spd * 0.28, 0.07)
+  camera.updateProjectionMatrix()
+
+  // Vignette darkens at speed
+  vignetteEl.style.opacity = (0.25 + Math.min(spd / 45, 0.45)).toFixed(2)
 }
 
 // ── Minimap ───────────────────────────────────────────────────────────────────
@@ -765,7 +858,7 @@ function animate(now) {
   posEl.textContent = `P${getPosition()}`
   if (raceStarted && !raceOver) timerEl.textContent = formatTime(Date.now() - raceStartTime)
 
-  renderer.render(scene, camera)
+  composer.render()
 }
 
 animate(performance.now())
