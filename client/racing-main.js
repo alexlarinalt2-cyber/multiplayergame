@@ -649,6 +649,32 @@ function updateSmoke(dt) {
   })
 }
 
+// ── Skid Marks ─────────────────────────────────────────────────────────────────
+// Ring-buffer InstancedMesh — bakes the flat-on-ground rotation into the geometry
+// so each instance only needs position + Y-heading → 1 draw call for all marks
+const SKID_MAX = 500
+const _skidGeo = new THREE.PlaneGeometry(0.25, 0.48)
+_skidGeo.rotateX(-Math.PI / 2)
+const _skidInst = new THREE.InstancedMesh(
+  _skidGeo,
+  new THREE.MeshBasicMaterial({ color: 0x0b0b0b, transparent: true, opacity: 0.55, depthWrite: false }),
+  SKID_MAX
+)
+_skidInst.frustumCulled = false
+scene.add(_skidInst)
+let _skidCursor = 0
+const _skidDummy = new THREE.Object3D()
+let _skidTimer = 0
+
+function stampSkid(x, z, angle) {
+  _skidDummy.position.set(x, 0.022, z)
+  _skidDummy.rotation.set(0, angle, 0)
+  _skidDummy.updateMatrix()
+  _skidInst.setMatrixAt(_skidCursor % SKID_MAX, _skidDummy.matrix)
+  _skidInst.instanceMatrix.needsUpdate = true
+  _skidCursor++
+}
+
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {}
 window.addEventListener('keydown', e => { keys[e.code] = true; initAudio() })
@@ -661,6 +687,10 @@ let playerLap   = 0
 let playerWpIdx = 0
 let playerPrevWpIdx = 0
 let raceStartTime = 0
+let lapStartTime  = 0
+let lastLapTime   = 0
+let bestLapTime   = Infinity
+let nitroCurrent  = 1.0   // 0–1 fuel level
 
 // ── HUD refs ──────────────────────────────────────────────────────────────────
 const speedEl     = document.getElementById('speed')
@@ -671,6 +701,12 @@ const annEl       = document.getElementById('announcement')
 const resultsEl   = document.getElementById('race-results')
 const resultsPosEl  = document.getElementById('results-pos')
 const resultsTimeEl = document.getElementById('results-time')
+const lastLapBoxEl  = document.getElementById('last-lap-box')
+const lastLapEl     = document.getElementById('last-lap')
+const bestLapBoxEl  = document.getElementById('best-lap-box')
+const bestLapEl     = document.getElementById('best-lap')
+const nitroFillEl   = document.getElementById('nitro-fill')
+const nitroGlowEl   = document.getElementById('nitro-glow')
 
 function showAnn(text, ms = 1200) {
   annEl.textContent = text
@@ -742,15 +778,31 @@ function ackermannAngles(steer) {
 }
 
 // ── Car update ────────────────────────────────────────────────────────────────
-function updatePlayer() {
+function updatePlayer(dt) {
   const v = playerPhysics.vehicle
   const speed = playerPhysics.body.velocity.length()   // m/s
+
+  // Lateral slip — component of velocity perpendicular to car heading
+  const bq = playerPhysics.body.quaternion
+  _smokeQ.set(bq.x, bq.y, bq.z, bq.w)
+  _smokeVL.set(1, 0, 0).applyQuaternion(_smokeQ)
+  const bv = playerPhysics.body.velocity
+  const latSlip = Math.abs(bv.x * _smokeVL.x + bv.y * _smokeVL.y + bv.z * _smokeVL.z)
+
+  // Nitro boost (Shift) — drains 1/3s, recharges 1/9s
+  const nitroActive = (keys['ShiftLeft'] || keys['ShiftRight']) && nitroCurrent > 0.05
+  if (nitroActive) {
+    nitroCurrent = Math.max(0, nitroCurrent - dt / 3.0)
+  } else {
+    nitroCurrent = Math.min(1, nitroCurrent + dt / 9.0)
+  }
 
   // Speed-sensitive steering: full lock at standstill, narrows linearly with speed
   const steerMax = 0.44 / (1 + speed * 0.045)
 
   // Engine force: strong off the line, tapers to ~30% at top speed (~55 m/s)
-  const forceMax = 2600 * Math.max(0.3, 1 - speed / 55)
+  let forceMax = 2600 * Math.max(0.3, 1 - speed / 55)
+  if (nitroActive) forceMax *= 1.55
   const brakeF   = 55
 
   let engine = 0, brake = 0, steer = 0, handbrake = false
@@ -778,6 +830,20 @@ function updatePlayer() {
   const cur = nearestWaypoint(p.x, p.z)
   if (detectLap(playerPrevWpIdx, cur)) {
     playerLap++
+    // Record split time
+    const now = Date.now()
+    if (lapStartTime > 0) {
+      lastLapTime = now - lapStartTime
+      lastLapBoxEl.style.display = ''
+      lastLapEl.textContent = formatTime(lastLapTime)
+      if (lastLapTime < bestLapTime) {
+        bestLapTime = lastLapTime
+        bestLapBoxEl.style.display = ''
+        bestLapEl.textContent = formatTime(bestLapTime)
+        if (playerLap > 1) showAnn('BEST LAP!', 1300)
+      }
+    }
+    lapStartTime = now
     if (playerLap > TOTAL_LAPS && !raceOver) {
       raceOver = true
       showResults(getPosition(), Date.now() - raceStartTime)
@@ -786,20 +852,31 @@ function updatePlayer() {
   playerPrevWpIdx = cur
   playerWpIdx = cur
 
-  // Smoke from rear wheels when braking hard or handbraking
+  // Rear-wheel world offset (shared _smokeQ already set above)
+  _smokeVL.set(-0.8, 0, -1.45).applyQuaternion(_smokeQ)
+  _smokeVR.set( 0.8, 0, -1.45).applyQuaternion(_smokeQ)
+  const bx = p.x, by = p.y, bz = p.z
+
+  // Smoke on braking/handbrake
   if ((handbrake || brake > 0) && speed > 4) {
-    _smokeQ.set(playerPhysics.body.quaternion.x, playerPhysics.body.quaternion.y,
-                playerPhysics.body.quaternion.z, playerPhysics.body.quaternion.w)
-    _smokeVL.set(-0.8, 0, -1.45).applyQuaternion(_smokeQ)
-    _smokeVR.set( 0.8, 0, -1.45).applyQuaternion(_smokeQ)
-    const bx = playerPhysics.body.position.x, by = playerPhysics.body.position.y, bz = playerPhysics.body.position.z
     emitSmoke(bx + _smokeVL.x, by + _smokeVL.y, bz + _smokeVL.z)
     emitSmoke(bx + _smokeVR.x, by + _smokeVR.y, bz + _smokeVR.z)
   }
 
-  // Expose braking state for audio (read in animate loop)
-  updatePlayer._speed   = speed
-  updatePlayer._braking = brake > 0 || handbrake
+  // Skid marks when sliding or braking hard
+  _skidTimer -= dt
+  if (_skidTimer <= 0 && speed > 5 && (brake > 0 || handbrake || latSlip > 3.0)) {
+    const heading = Math.atan2(2 * (bq.w * bq.y + bq.x * bq.z), 1 - 2 * (bq.y * bq.y + bq.z * bq.z))
+    stampSkid(bx + _smokeVL.x, bz + _smokeVL.z, heading)
+    stampSkid(bx + _smokeVR.x, bz + _smokeVR.z, heading)
+    _skidTimer = 0.055
+  }
+
+  // Expose state for animate loop (audio + nitro bar)
+  updatePlayer._speed       = speed
+  updatePlayer._braking     = brake > 0 || handbrake
+  updatePlayer._latSlip     = latSlip
+  updatePlayer._nitroActive = nitroActive
 }
 
 function updateBot(bot) {
@@ -956,6 +1033,7 @@ function runStartLights() {
           showAnn('GO!', 700)
           raceStarted = true
           raceStartTime = Date.now()
+          lapStartTime  = raceStartTime
         }, 250)
       }, 500 + Math.random() * 700)
     }
@@ -981,7 +1059,7 @@ function animate(now) {
   world.step(1 / 60, dt, 2)   // 2 substeps instead of 3 — faster, still stable
 
   if (raceStarted && !raceOver) {
-    updatePlayer()
+    updatePlayer(dt)
     bots.forEach(updateBot)
   }
 
@@ -992,14 +1070,18 @@ function animate(now) {
   drawMinimap()
   updateSmoke(dt)
 
-  // Audio: lateral slip = component of velocity sideways relative to car heading
-  {
-    const body = playerPhysics.body
-    _smokeQ.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w)
-    _smokeVL.set(1, 0, 0).applyQuaternion(_smokeQ)
-    const latSlip = Math.abs(body.velocity.x * _smokeVL.x + body.velocity.y * _smokeVL.y + body.velocity.z * _smokeVL.z)
-    updateAudio(body.velocity.length(), latSlip, updatePlayer._braking || false)
-  }
+  // Audio (uses slip/braking already computed in updatePlayer)
+  updateAudio(
+    updatePlayer._speed     ?? 0,
+    updatePlayer._latSlip   ?? 0,
+    updatePlayer._braking   ?? false
+  )
+
+  // Nitro HUD
+  nitroFillEl.style.transform = `scaleX(${nitroCurrent.toFixed(3)})`
+  const na = updatePlayer._nitroActive ?? false
+  nitroFillEl.style.background = na ? '#ff7b00' : '#00e5ff'
+  nitroGlowEl.style.opacity    = na ? '1' : '0'
 
   // HUD
   const vel = playerPhysics.body.velocity
