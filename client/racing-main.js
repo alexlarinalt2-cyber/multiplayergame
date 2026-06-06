@@ -555,9 +555,103 @@ const bots = BOT_SPEEDS.map((speed, i) => ({
   }
 })()
 
+// ── Audio ─────────────────────────────────────────────────────────────────────
+let audioCtx = null, engineOsc = null, engineGain = null
+let screechSrc = null, screechGain = null
+
+function _distortionCurve(amount) {
+  const n = 256, c = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / n - 1
+    c[i] = (Math.PI + amount) * x / (Math.PI + amount * Math.abs(x))
+  }
+  return c
+}
+
+function initAudio() {
+  if (audioCtx) return
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+
+  // Engine: sawtooth → soft clip distortion → bandpass → gain
+  engineOsc = audioCtx.createOscillator()
+  engineOsc.type = 'sawtooth'
+  engineOsc.frequency.value = 80
+
+  const dist = audioCtx.createWaveShaper()
+  dist.curve = _distortionCurve(60)
+  dist.oversample = '2x'
+
+  const eqFilt = audioCtx.createBiquadFilter()
+  eqFilt.type = 'bandpass'
+  eqFilt.frequency.value = 600
+  eqFilt.Q.value = 0.7
+
+  engineGain = audioCtx.createGain()
+  engineGain.gain.value = 0
+
+  engineOsc.connect(dist); dist.connect(eqFilt); eqFilt.connect(engineGain)
+  engineGain.connect(audioCtx.destination)
+  engineOsc.start()
+
+  // Tire screech: looped white noise → bandpass → gain
+  const bufLen = audioCtx.sampleRate * 2
+  const noiseBuf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate)
+  const nd = noiseBuf.getChannelData(0)
+  for (let i = 0; i < bufLen; i++) nd[i] = Math.random() * 2 - 1
+
+  screechSrc = audioCtx.createBufferSource()
+  screechSrc.buffer = noiseBuf; screechSrc.loop = true
+
+  const sf = audioCtx.createBiquadFilter()
+  sf.type = 'bandpass'; sf.frequency.value = 950; sf.Q.value = 6
+
+  screechGain = audioCtx.createGain(); screechGain.gain.value = 0
+  screechSrc.connect(sf); sf.connect(screechGain); screechGain.connect(audioCtx.destination)
+  screechSrc.start()
+}
+
+function updateAudio(speed, latSlip, braking) {
+  if (!audioCtx) return
+  const t = audioCtx.currentTime
+  engineOsc.frequency.setTargetAtTime(80 + speed * 1.9, t, 0.06)
+  engineGain.gain.setTargetAtTime(raceStarted ? 0.07 : 0, t, 0.12)
+  const screechVol = Math.min(0.28, Math.max(0, latSlip - 3.0) * 0.05 + (braking && speed > 6 ? 0.1 : 0))
+  screechGain.gain.setTargetAtTime(screechVol, t, 0.04)
+}
+
+// ── Smoke Particles ────────────────────────────────────────────────────────────
+const _smokeMat = new THREE.SpriteMaterial({ color: 0xcccccc, transparent: true, depthWrite: false })
+const _smokePool = Array.from({ length: 24 }, () => {
+  const sp = new THREE.Sprite(_smokeMat.clone())
+  sp.visible = false
+  scene.add(sp)
+  return { sp, life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0 }
+})
+
+function emitSmoke(wx, wy, wz) {
+  const p = _smokePool.find(p => p.life <= 0)
+  if (!p) return
+  p.sp.position.set(wx + (Math.random() - .5) * .5, wy + .12, wz + (Math.random() - .5) * .5)
+  p.vx = (Math.random() - .5) * .7; p.vy = .35 + Math.random() * .25; p.vz = (Math.random() - .5) * .7
+  p.maxLife = .5 + Math.random() * .3; p.life = p.maxLife
+  p.sp.visible = true
+}
+
+function updateSmoke(dt) {
+  _smokePool.forEach(p => {
+    if (p.life <= 0) return
+    p.life -= dt
+    if (p.life <= 0) { p.sp.visible = false; return }
+    p.sp.position.x += p.vx * dt; p.sp.position.y += p.vy * dt; p.sp.position.z += p.vz * dt
+    const t = p.life / p.maxLife
+    p.sp.scale.setScalar(.2 + (1 - t) * 1.4)
+    p.sp.material.opacity = t * .38
+  })
+}
+
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {}
-window.addEventListener('keydown', e => { keys[e.code] = true })
+window.addEventListener('keydown', e => { keys[e.code] = true; initAudio() })
 window.addEventListener('keyup',   e => { keys[e.code] = false })
 
 // ── Race state ────────────────────────────────────────────────────────────────
@@ -569,11 +663,14 @@ let playerPrevWpIdx = 0
 let raceStartTime = 0
 
 // ── HUD refs ──────────────────────────────────────────────────────────────────
-const speedEl  = document.getElementById('speed')
-const lapEl    = document.getElementById('lap')
-const posEl    = document.getElementById('pos-value')
-const timerEl  = document.getElementById('timer')
-const annEl    = document.getElementById('announcement')
+const speedEl     = document.getElementById('speed')
+const lapEl       = document.getElementById('lap')
+const posEl       = document.getElementById('pos-value')
+const timerEl     = document.getElementById('timer')
+const annEl       = document.getElementById('announcement')
+const resultsEl   = document.getElementById('race-results')
+const resultsPosEl  = document.getElementById('results-pos')
+const resultsTimeEl = document.getElementById('results-time')
 
 function showAnn(text, ms = 1200) {
   annEl.textContent = text
@@ -582,6 +679,12 @@ function showAnn(text, ms = 1200) {
   void annEl.offsetWidth
   annEl.style.animation = 'pop 0.2s ease-out'
   if (ms > 0) setTimeout(() => { annEl.style.display = 'none' }, ms)
+}
+
+function showResults(pos, timeMs) {
+  resultsPosEl.textContent = `P${pos}`
+  resultsTimeEl.textContent = formatTime(timeMs)
+  resultsEl.classList.add('visible')
 }
 
 function formatTime(ms) {
@@ -595,6 +698,9 @@ function formatTime(ms) {
 const _botFwd    = new THREE.Vector3()
 const _botTarget = new THREE.Vector3()
 const _botQ      = new THREE.Quaternion()
+const _smokeQ    = new THREE.Quaternion()
+const _smokeVL   = new THREE.Vector3()
+const _smokeVR   = new THREE.Vector3()
 
 // ── Waypoint helpers ──────────────────────────────────────────────────────────
 function nearestWaypoint(px, pz) {
@@ -674,16 +780,30 @@ function updatePlayer() {
     playerLap++
     if (playerLap > TOTAL_LAPS && !raceOver) {
       raceOver = true
-      showAnn(`FINISH!\n${formatTime(Date.now() - raceStartTime)}`, 0)
-      annEl.style.fontSize = '3rem'
+      showResults(getPosition(), Date.now() - raceStartTime)
     }
   }
   playerPrevWpIdx = cur
   playerWpIdx = cur
+
+  // Smoke from rear wheels when braking hard or handbraking
+  if ((handbrake || brake > 0) && speed > 4) {
+    _smokeQ.set(playerPhysics.body.quaternion.x, playerPhysics.body.quaternion.y,
+                playerPhysics.body.quaternion.z, playerPhysics.body.quaternion.w)
+    _smokeVL.set(-0.8, 0, -1.45).applyQuaternion(_smokeQ)
+    _smokeVR.set( 0.8, 0, -1.45).applyQuaternion(_smokeQ)
+    const bx = playerPhysics.body.position.x, by = playerPhysics.body.position.y, bz = playerPhysics.body.position.z
+    emitSmoke(bx + _smokeVL.x, by + _smokeVL.y, bz + _smokeVL.z)
+    emitSmoke(bx + _smokeVR.x, by + _smokeVR.y, bz + _smokeVR.z)
+  }
+
+  // Expose braking state for audio (read in animate loop)
+  updatePlayer._speed   = speed
+  updatePlayer._braking = brake > 0 || handbrake
 }
 
 function updateBot(bot) {
-  const wp = waypoints[bot.wpIdx]
+  const wp = waypoints[bot.wpIdx]   // nearest — used for lap detection
   const pos = bot.physics.body.position
   const dx = wp.x - pos.x
   const dz = wp.z - pos.z
@@ -698,9 +818,14 @@ function updateBot(bot) {
     }
   }
 
+  // Aim 4 waypoints ahead for smoother, more realistic racing lines
+  const lookIdx = (bot.wpIdx + 4) % NUM_WAYPOINTS
+  const lookWp  = waypoints[lookIdx]
+  const ldx = lookWp.x - pos.x, ldz = lookWp.z - pos.z
+
   const quat = bot.physics.body.quaternion
   _botFwd.set(0, 0, 1).applyQuaternion(_botQ.set(quat.x, quat.y, quat.z, quat.w))
-  _botTarget.set(dx, 0, dz).normalize()
+  _botTarget.set(ldx, 0, ldz).normalize()
   const fwd = _botFwd, toTarget = _botTarget
   const cross = fwd.x * toTarget.z - fwd.z * toTarget.x
   const steer = Math.max(-0.5, Math.min(0.5, -cross * 1.8))
@@ -810,19 +935,35 @@ function drawMinimap() {
   mapCtx.fill()
 }
 
-// ── Countdown & start ─────────────────────────────────────────────────────────
-function startCountdown() {
-  showAnn('3', 900)
-  setTimeout(() => showAnn('2', 900), 1000)
-  setTimeout(() => showAnn('1', 900), 2000)
-  setTimeout(() => {
-    showAnn('GO!', 800)
-    raceStarted = true
-    raceStartTime = Date.now()
-  }, 3000)
+// ── Traffic-light start sequence ──────────────────────────────────────────────
+const slEl     = document.getElementById('start-lights')
+const slLights = [1, 2, 3, 4, 5].map(n => document.getElementById(`sl-${n}`))
+
+function runStartLights() {
+  slEl.style.display = 'block'
+  let lit = 0
+  function lightUp() {
+    if (lit < 5) {
+      slLights[lit].classList.add('on')
+      lit++
+      setTimeout(lightUp, 800)
+    } else {
+      // All 5 lit → short random hold → extinguish = GO
+      setTimeout(() => {
+        slLights.forEach(l => l.classList.remove('on'))
+        setTimeout(() => {
+          slEl.style.display = 'none'
+          showAnn('GO!', 700)
+          raceStarted = true
+          raceStartTime = Date.now()
+        }, 250)
+      }, 500 + Math.random() * 700)
+    }
+  }
+  lightUp()
 }
 
-startCountdown()
+runStartLights()
 
 // ── Game loop ─────────────────────────────────────────────────────────────────
 let prevTime = performance.now()
@@ -849,6 +990,16 @@ function animate(now) {
 
   updateCamera()
   drawMinimap()
+  updateSmoke(dt)
+
+  // Audio: lateral slip = component of velocity sideways relative to car heading
+  {
+    const body = playerPhysics.body
+    _smokeQ.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w)
+    _smokeVL.set(1, 0, 0).applyQuaternion(_smokeQ)
+    const latSlip = Math.abs(body.velocity.x * _smokeVL.x + body.velocity.y * _smokeVL.y + body.velocity.z * _smokeVL.z)
+    updateAudio(body.velocity.length(), latSlip, updatePlayer._braking || false)
+  }
 
   // HUD
   const vel = playerPhysics.body.velocity
