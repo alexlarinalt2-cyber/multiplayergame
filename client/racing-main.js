@@ -6,6 +6,7 @@ import { Sky } from 'three/examples/jsm/objects/Sky.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import * as UI from './ui.js'
 const gltfLoader = new GLTFLoader()
 
 // Load a GLB, resolve with scene or null on failure
@@ -118,6 +119,7 @@ const trackControlPts = [
 
 const trackCurve = new THREE.CatmullRomCurve3(trackControlPts, true, 'catmullrom', 0.5)
 const waypoints = trackCurve.getPoints(NUM_WAYPOINTS)
+UI.initMinimapWaypoints(waypoints)
 
 // Build track road mesh
 function buildTrackMesh() {
@@ -613,7 +615,15 @@ function initAudio() {
 function updateAudio(speed, latSlip, braking) {
   if (!audioCtx) return
   const t = audioCtx.currentTime
-  engineOsc.frequency.setTargetAtTime(80 + speed * 1.9, t, 0.06)
+
+  // Gear shift: detect gear change, apply pitch blip then decay
+  let g = 0
+  for (let i = GEAR_SPDS.length - 1; i >= 0; i--) { if (speed >= GEAR_SPDS[i]) { g = i; break } }
+  if (_prevGear >= 0 && g !== _prevGear) _gearPitch = g > _prevGear ? -28 : 22
+  _prevGear = g
+  _gearPitch *= 0.87
+
+  engineOsc.frequency.setTargetAtTime(80 + speed * 1.9 + _gearPitch, t, 0.06)
   engineGain.gain.setTargetAtTime(raceStarted ? 0.07 : 0, t, 0.12)
   const screechVol = Math.min(0.28, Math.max(0, latSlip - 3.0) * 0.05 + (braking && speed > 6 ? 0.1 : 0))
   screechGain.gain.setTargetAtTime(screechVol, t, 0.04)
@@ -675,6 +685,72 @@ function stampSkid(x, z, angle) {
   _skidCursor++
 }
 
+// ── Collision sparks (AdditiveBlending → bright embers that glow on overlap) ──
+const _spkMat = new THREE.SpriteMaterial({
+  color: 0xffee44, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+})
+const _spkPool = Array.from({ length: 20 }, () => {
+  const sp = new THREE.Sprite(_spkMat.clone()); sp.visible = false; scene.add(sp)
+  return { sp, life: 0, maxLife: 0, vx: 0, vy: 0, vz: 0 }
+})
+const _spkLight = new THREE.PointLight(0xffcc44, 0, 12)
+scene.add(_spkLight)
+let _spkLightLife = 0
+
+// Camera shake — exponential decay each frame, no dt needed
+let _shakeMag = 0
+function triggerShake(strength) { _shakeMag = Math.min(0.55, strength * 0.04) }
+
+// Gear shift pitch — jumps on gear change, decays each updateAudio call
+const GEAR_SPDS = [0, 8, 18, 30, 44, 58]
+let _prevGear = -1, _gearPitch = 0
+
+function emitSparks(x, y, z, nx, nz, count = 6) {
+  for (let i = 0; i < count; i++) {
+    const p = _spkPool.find(p => p.life <= 0); if (!p) return
+    p.vx = nx * 2.5 + (Math.random() - .5) * 4
+    p.vy = 1.2 + Math.random() * 3.5
+    p.vz = nz * 2.5 + (Math.random() - .5) * 4
+    p.maxLife = .18 + Math.random() * .16; p.life = p.maxLife
+    p.sp.position.set(x, y, z)
+    p.sp.scale.setScalar(.07 + Math.random() * .07)
+    p.sp.visible = true
+  }
+  _spkLight.position.set(x, y + .5, z); _spkLight.intensity = 8; _spkLightLife = .15
+}
+
+function updateSparks(dt) {
+  _spkPool.forEach(p => {
+    if (p.life <= 0) return
+    p.life -= dt; if (p.life <= 0) { p.sp.visible = false; return }
+    p.vy -= 9.8 * dt
+    p.sp.position.x += p.vx * dt
+    p.sp.position.y += p.vy * dt
+    p.sp.position.z += p.vz * dt
+    p.sp.material.opacity = (p.life / p.maxLife) * 0.95
+  })
+  if (_spkLightLife > 0) {
+    _spkLightLife -= dt
+    _spkLight.intensity = Math.max(0, _spkLightLife / .15 * 8)
+  }
+}
+
+// Register collision listener — fires sparks + shake on hard impacts
+playerPhysics.body.addEventListener('collide', e => {
+  const ov  = e.body.velocity
+  const ni  = e.contact.ni
+  const impact = Math.abs(
+    (playerPhysics.body.velocity.x - ov.x) * ni.x +
+    (playerPhysics.body.velocity.y - ov.y) * ni.y +
+    (playerPhysics.body.velocity.z - ov.z) * ni.z
+  )
+  if (impact < 3.5) return
+  const bpos = playerPhysics.body.position
+  emitSparks(bpos.x, bpos.y + .3, bpos.z, ni.x, ni.z, Math.min(10, Math.floor(impact)))
+  triggerShake(impact)
+})
+
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {}
 window.addEventListener('keydown', e => { keys[e.code] = true; initAudio() })
@@ -692,34 +768,33 @@ let lastLapTime   = 0
 let bestLapTime   = Infinity
 let nitroCurrent  = 1.0   // 0–1 fuel level
 
-// ── HUD refs ──────────────────────────────────────────────────────────────────
-const speedEl     = document.getElementById('speed')
-const lapEl       = document.getElementById('lap')
-const posEl       = document.getElementById('pos-value')
-const timerEl     = document.getElementById('timer')
-const annEl       = document.getElementById('announcement')
-const resultsEl   = document.getElementById('race-results')
+// ── DOM refs (only results overlay + CSS effects remain in HTML) ──────────────
+const resultsEl     = document.getElementById('race-results')
 const resultsPosEl  = document.getElementById('results-pos')
 const resultsTimeEl = document.getElementById('results-time')
-const lastLapBoxEl  = document.getElementById('last-lap-box')
-const lastLapEl     = document.getElementById('last-lap')
-const bestLapBoxEl  = document.getElementById('best-lap-box')
-const bestLapEl     = document.getElementById('best-lap')
-const nitroFillEl   = document.getElementById('nitro-fill')
+const resultsPbEl   = document.getElementById('results-pb')
 const nitroGlowEl   = document.getElementById('nitro-glow')
 
-function showAnn(text, ms = 1200) {
-  annEl.textContent = text
-  annEl.style.display = 'block'
-  annEl.style.animation = 'none'
-  void annEl.offsetWidth
-  annEl.style.animation = 'pop 0.2s ease-out'
-  if (ms > 0) setTimeout(() => { annEl.style.display = 'none' }, ms)
+// ── Personal best (localStorage) ─────────────────────────────────────────────
+const PB_KEY = 'cRacerPB'
+let _personalBest = parseInt(localStorage.getItem(PB_KEY) || '0', 10) || Infinity
+
+function _checkSavePB(ms) {
+  if (ms < _personalBest) { _personalBest = ms; localStorage.setItem(PB_KEY, ms); return true }
+  return false
 }
 
 function showResults(pos, timeMs) {
+  const isNewPB = _checkSavePB(timeMs)
   resultsPosEl.textContent = `P${pos}`
   resultsTimeEl.textContent = formatTime(timeMs)
+  if (isNewPB) {
+    resultsPbEl.textContent  = '🏆 NEW PERSONAL BEST!'
+    resultsPbEl.style.color  = '#f9c74f'
+  } else if (_personalBest < Infinity) {
+    resultsPbEl.textContent = `PB: ${formatTime(_personalBest)}`
+    resultsPbEl.style.color = '#888'
+  }
   resultsEl.classList.add('visible')
 }
 
@@ -834,13 +909,11 @@ function updatePlayer(dt) {
     const now = Date.now()
     if (lapStartTime > 0) {
       lastLapTime = now - lapStartTime
-      lastLapBoxEl.style.display = ''
-      lastLapEl.textContent = formatTime(lastLapTime)
+      UI.setLastLap(formatTime(lastLapTime))
       if (lastLapTime < bestLapTime) {
         bestLapTime = lastLapTime
-        bestLapBoxEl.style.display = ''
-        bestLapEl.textContent = formatTime(bestLapTime)
-        if (playerLap > 1) showAnn('BEST LAP!', 1300)
+        UI.setBestLap(formatTime(bestLapTime))
+        if (playerLap > 1) UI.showAnn('BEST LAP!', 1300)
       }
     }
     lapStartTime = now
@@ -964,6 +1037,13 @@ function updateCamera() {
   camera.position.lerp(_camTarget, 0.08)
   camera.lookAt(_lookTarget)
 
+  // Camera shake — decays ×0.80 per frame (cosmetic, framerate-independent enough)
+  if (_shakeMag > 0.002) {
+    camera.position.x += (Math.random() - .5) * _shakeMag
+    camera.position.y += (Math.random() - .5) * _shakeMag * .4
+    _shakeMag *= 0.80
+  }
+
   // Speed-based FOV: widens at high speed for a rush sensation
   const spd = playerPhysics.body.velocity.length()
   camera.fov = THREE.MathUtils.lerp(camera.fov, 72 + spd * 0.28, 0.07)
@@ -973,75 +1053,13 @@ function updateCamera() {
   vignetteEl.style.opacity = (0.25 + Math.min(spd / 45, 0.45)).toFixed(2)
 }
 
-// ── Minimap ───────────────────────────────────────────────────────────────────
-const mapCanvas = document.getElementById('mapCanvas')
-const mapCtx = mapCanvas.getContext('2d')
-const MAP_SCALE = 0.95
-const MAP_CX = 65, MAP_CY = 65
-
-function drawMinimap() {
-  mapCtx.clearRect(0, 0, 130, 130)
-
-  // Track outline
-  mapCtx.beginPath()
-  waypoints.forEach((wp, i) => {
-    const mx = MAP_CX + wp.x * MAP_SCALE
-    const my = MAP_CY + wp.z * MAP_SCALE
-    i === 0 ? mapCtx.moveTo(mx, my) : mapCtx.lineTo(mx, my)
-  })
-  mapCtx.closePath()
-  mapCtx.strokeStyle = 'rgba(255,255,255,0.5)'
-  mapCtx.lineWidth = 4
-  mapCtx.stroke()
-
-  // Bots
-  bots.forEach((bot, i) => {
-    const p = bot.physics.body.position
-    const colors = ['#ef5350', '#66bb6a', '#ffa726']
-    mapCtx.fillStyle = colors[i]
-    mapCtx.beginPath()
-    mapCtx.arc(MAP_CX + p.x * MAP_SCALE, MAP_CY + p.z * MAP_SCALE, 3.5, 0, Math.PI * 2)
-    mapCtx.fill()
-  })
-
-  // Player
-  const pp = playerPhysics.body.position
-  mapCtx.fillStyle = '#42a5f5'
-  mapCtx.beginPath()
-  mapCtx.arc(MAP_CX + pp.x * MAP_SCALE, MAP_CY + pp.z * MAP_SCALE, 5, 0, Math.PI * 2)
-  mapCtx.fill()
-}
-
-// ── Traffic-light start sequence ──────────────────────────────────────────────
-const slEl     = document.getElementById('start-lights')
-const slLights = [1, 2, 3, 4, 5].map(n => document.getElementById(`sl-${n}`))
-
-function runStartLights() {
-  slEl.style.display = 'block'
-  let lit = 0
-  function lightUp() {
-    if (lit < 5) {
-      slLights[lit].classList.add('on')
-      lit++
-      setTimeout(lightUp, 800)
-    } else {
-      // All 5 lit → short random hold → extinguish = GO
-      setTimeout(() => {
-        slLights.forEach(l => l.classList.remove('on'))
-        setTimeout(() => {
-          slEl.style.display = 'none'
-          showAnn('GO!', 700)
-          raceStarted = true
-          raceStartTime = Date.now()
-          lapStartTime  = raceStartTime
-        }, 250)
-      }, 500 + Math.random() * 700)
-    }
-  }
-  lightUp()
-}
-
-runStartLights()
+// ── Start sequence via Pixi UI ─────────────────────────────────────────────────
+UI.runTrafficLights(() => {
+  UI.showAnn('GO!', 700)
+  raceStarted = true
+  raceStartTime = Date.now()
+  lapStartTime  = raceStartTime
+})
 
 // ── Game loop ─────────────────────────────────────────────────────────────────
 let prevTime = performance.now()
@@ -1067,29 +1085,36 @@ function animate(now) {
   bots.forEach(bot => syncMesh(bot.physics, bot.visual))
 
   updateCamera()
-  drawMinimap()
   updateSmoke(dt)
+  updateSparks(dt)
 
-  // Audio (uses slip/braking already computed in updatePlayer)
-  updateAudio(
-    updatePlayer._speed     ?? 0,
-    updatePlayer._latSlip   ?? 0,
-    updatePlayer._braking   ?? false
-  )
+  // Audio
+  const _spd = updatePlayer._speed     ?? 0
+  const _lat = updatePlayer._latSlip   ?? 0
+  const _brk = updatePlayer._braking   ?? false
+  const _na  = updatePlayer._nitroActive ?? false
+  updateAudio(_spd, _lat, _brk)
 
-  // Nitro HUD
-  nitroFillEl.style.transform = `scaleX(${nitroCurrent.toFixed(3)})`
-  const na = updatePlayer._nitroActive ?? false
-  nitroFillEl.style.background = na ? '#ff7b00' : '#00e5ff'
-  nitroGlowEl.style.opacity    = na ? '1' : '0'
+  // Nitro glow overlay (HTML CSS effect)
+  nitroGlowEl.style.opacity = _na ? '1' : '0'
 
-  // HUD
+  // Pixi HUD update
   const vel = playerPhysics.body.velocity
   const kmh = Math.round(Math.sqrt(vel.x ** 2 + vel.z ** 2) * 3.6)
-  speedEl.textContent = kmh
-  lapEl.textContent = `${Math.min(playerLap + 1, TOTAL_LAPS)} / ${TOTAL_LAPS}`
-  posEl.textContent = `P${getPosition()}`
-  if (raceStarted && !raceOver) timerEl.textContent = formatTime(Date.now() - raceStartTime)
+  UI.updateHUD({
+    speedKmh:    kmh,
+    lapText:     `${Math.min(playerLap + 1, TOTAL_LAPS)} / ${TOTAL_LAPS}`,
+    posText:     `P${getPosition()}`,
+    timerText:   (raceStarted && !raceOver) ? formatTime(Date.now() - raceStartTime) : '0:00.00',
+    nitroLevel:  nitroCurrent,
+    nitroActive: _na,
+  })
+
+  // Pixi minimap
+  UI.updateMinimap(
+    playerPhysics.body.position,
+    bots.map(b => b.physics.body.position)
+  )
 
   composer.render()
 }
