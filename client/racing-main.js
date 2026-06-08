@@ -303,13 +303,12 @@ addTrees()
 
 // ── Car Builder ───────────────────────────────────────────────────────────────
 function createCarPhysics(spawnPos, spawnAngle) {
-  const chassisBody = new CANNON.Body({ mass: 180 })
-  // Low CoM, slightly forward → front-engine ~55/45 weight split
+  const chassisBody = new CANNON.Body({ mass: 90 })
   chassisBody.addShape(new CANNON.Box(new CANNON.Vec3(0.9, 0.26, 2.0)), new CANNON.Vec3(0, 0.10, 0.25))
   chassisBody.position.set(spawnPos.x, 1.0, spawnPos.z)
   chassisBody.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), spawnAngle)
-  chassisBody.linearDamping  = 0.04   // minimal drag — coasting feels real
-  chassisBody.angularDamping = 0.3    // low — lateral grip function handles stability
+  chassisBody.linearDamping  = 0.02   // momentum is king — coasting holds speed
+  chassisBody.angularDamping = 0.7    // snappy yaw response
   world.addBody(chassisBody)
 
   const vehicle = new CANNON.RaycastVehicle({
@@ -319,33 +318,33 @@ function createCarPhysics(spawnPos, spawnAngle) {
     indexForwardAxis: 2
   })
 
-  // Front: stiffer — resists dive under braking, quick turn-in response
+  // Front: very stiff — ground-hugging, no bounce, instant turn-in
   const frontWheel = {
     radius: 0.33,
     directionLocal: new CANNON.Vec3(0, -1, 0),
-    suspensionStiffness: 55,
-    suspensionRestLength: 0.33,
-    frictionSlip: 1.9,            // slightly lower → front breaks away first = understeer at limit
-    dampingRelaxation: 2.8,
-    dampingCompression: 5.2,
+    suspensionStiffness: 90,
+    suspensionRestLength: 0.26,
+    frictionSlip: 2.2,
+    dampingRelaxation: 4.0,
+    dampingCompression: 7.0,
     maxSuspensionForce: 260000,
     rollInfluence: 0.01,
     axleLocal: new CANNON.Vec3(-1, 0, 0),
-    maxSuspensionTravel: 0.22,
+    maxSuspensionTravel: 0.14,
     customSlidingRotationalSpeed: -30,
     useCustomSlidingRotationalSpeed: true
   }
 
-  // Rear: softer — planted under power, allows controlled slides with handbrake
+  // Rear: slightly softer — planted under power, drift-friendly
   const rearWheel = {
     ...frontWheel,
-    suspensionStiffness: 42,
-    suspensionRestLength: 0.38,
-    frictionSlip: 2.3,
-    dampingRelaxation: 2.2,
-    dampingCompression: 4.4,
-    rollInfluence: 0.008,
-    maxSuspensionTravel: 0.26,
+    suspensionStiffness: 72,
+    suspensionRestLength: 0.28,
+    frictionSlip: 2.6,
+    dampingRelaxation: 3.2,
+    dampingCompression: 5.8,
+    rollInfluence: 0.006,
+    maxSuspensionTravel: 0.16,
   }
 
   ;[
@@ -359,36 +358,69 @@ function createCarPhysics(spawnPos, spawnAngle) {
   return { body: chassisBody, vehicle }
 }
 
-// ── Tire lateral grip ─────────────────────────────────────────────────────────
-// cannon-es RaycastVehicle has NO built-in lateral friction — apply a per-frame
-// impulse opposing sideways slip. Pre-allocate all Vec3s to avoid GC pressure.
-const _gripLocalRight = new CANNON.Vec3(1, 0, 0)
-const _gripRight      = new CANNON.Vec3()
-const _gripImpulse    = new CANNON.Vec3()
+// ── Velocity-bending grip (PolyTrack-style) ───────────────────────────────────
+// Decompose velocity into forward/lateral each frame. In GRIP mode kill ~82% of
+// lateral velocity → car goes exactly where it's pointed. In DRIFT mode kill only
+// ~22% → clean predictable slide arc. On clean drift exit, reward with a forward
+// speed boost (the "extra speed out of a drift" feel).
+const _driftState = new Map()  // body.id → { drifting, driftTimer }
 
-function applyCarGrip(body, vehicle) {
+function getDriftState(body) {
+  if (!_driftState.has(body.id)) _driftState.set(body.id, { drifting: false, driftTimer: 0 })
+  return _driftState.get(body.id)
+}
+
+const _vbFwdLocal   = new CANNON.Vec3(0, 0, 1)
+const _vbRightLocal = new CANNON.Vec3(1, 0, 0)
+const _vbFwd        = new CANNON.Vec3()
+const _vbRight      = new CANNON.Vec3()
+const _vbImp        = new CANNON.Vec3()
+
+function applyCarGrip(body, vehicle, forceHandbrake = false) {
   if (!vehicle.wheelInfos.some(w => w.isInContact)) return
 
-  body.quaternion.vmult(_gripLocalRight, _gripRight)
+  body.quaternion.vmult(_vbFwdLocal, _vbFwd)
+  body.quaternion.vmult(_vbRightLocal, _vbRight)
 
-  const latVel  = body.velocity.dot(_gripRight)
-  const slipMag = Math.abs(latVel)
+  const vel      = body.velocity
+  const fwdSpeed = vel.x * _vbFwd.x   + vel.y * _vbFwd.y   + vel.z * _vbFwd.z
+  const latSpeed = vel.x * _vbRight.x + vel.y * _vbRight.y + vel.z * _vbRight.z
+  const slipMag  = Math.abs(latSpeed)
+  const horizSpd = Math.sqrt(vel.x * vel.x + vel.z * vel.z)
 
-  // Pacejka-style curve: grip peaks at low slip, degrades progressively
-  const grip = 0.38 / (1.0 + slipMag * 0.22)
-  const mag  = -latVel * body.mass * grip
+  const ds = getDriftState(body)
 
-  _gripImpulse.x = _gripRight.x * mag
-  _gripImpulse.y = 0
-  _gripImpulse.z = _gripRight.z * mag
-  body.applyImpulse(_gripImpulse)   // no relativePoint = at CoM, no spurious torque
+  // Enter drift: handbrake held, or lateral slip threshold exceeded at speed
+  if (!ds.drifting && (forceHandbrake || (slipMag > 5.0 && horizSpd > 6))) {
+    ds.drifting = true
+    ds.driftTimer = 0
+  }
+  if (ds.drifting) ds.driftTimer += 1 / 60
 
-  // Self-aligning torque: damp yaw proportional to lateral slip
-  body.angularVelocity.y *= Math.max(0.88, 1.0 - slipMag * 0.04)
+  // Exit drift: slip settled AND handbrake released
+  if (ds.drifting && !forceHandbrake && slipMag < 2.2) {
+    ds.drifting = false
+    // Speed reward: clean exit converts lateral momentum into forward thrust
+    const boost = Math.min(slipMag * 0.06, 0.18)
+    body.velocity.x += _vbFwd.x * Math.abs(latSpeed) * boost
+    body.velocity.z += _vbFwd.z * Math.abs(latSpeed) * boost
+  }
 
-  // Downforce: write directly to force accumulator — zero allocation
+  // Grip strength: near-binary — planted in grip, smooth arc in drift
+  const gripStrength = ds.drifting ? 0.22 : 0.82
+  const corrMag = -latSpeed * body.mass * gripStrength
+
+  _vbImp.x = _vbRight.x * corrMag
+  _vbImp.y = 0
+  _vbImp.z = _vbRight.z * corrMag
+  body.applyImpulse(_vbImp)
+
+  // Yaw damping — snappy in grip, looser in drift for natural rotation
+  body.angularVelocity.y *= ds.drifting ? 0.96 : Math.max(0.82, 1.0 - slipMag * 0.04)
+
+  // Downforce — keeps car glued to track at speed
   const spd = body.velocity.length()
-  body.force.y -= spd * spd * 0.5
+  body.force.y -= spd * spd * 0.6
 }
 
 // Primitive fallback car (box-based)
@@ -872,13 +904,13 @@ function updatePlayer(dt) {
     nitroCurrent = Math.min(1, nitroCurrent + dt / 9.0)
   }
 
-  // Speed-sensitive steering: full lock at standstill, narrows linearly with speed
-  const steerMax = 0.44 / (1 + speed * 0.045)
+  // Speed-sensitive steering: stays more responsive at speed than before
+  const steerMax = 0.48 / (1 + speed * 0.030)
 
-  // Engine force: strong off the line, tapers to ~30% at top speed (~55 m/s)
-  let forceMax = 2600 * Math.max(0.3, 1 - speed / 55)
+  // Punchy off the line, tapers smoothly — lighter car needs less force but feels snappier
+  let forceMax = 4200 * Math.max(0.3, 1 - speed / 58)
   if (nitroActive) forceMax *= 1.55
-  const brakeF   = 55
+  const brakeF = 95   // decisive — hard braking is a committed choice
 
   let engine = 0, brake = 0, steer = 0, handbrake = false
   if (keys['KeyW'] || keys['ArrowUp'])    engine =  forceMax
@@ -945,11 +977,12 @@ function updatePlayer(dt) {
     _skidTimer = 0.055
   }
 
-  // Expose state for animate loop (audio + nitro bar)
+  // Expose state for animate loop (audio + nitro bar + grip system)
   updatePlayer._speed       = speed
   updatePlayer._braking     = brake > 0 || handbrake
   updatePlayer._latSlip     = latSlip
   updatePlayer._nitroActive = nitroActive
+  updatePlayer._handbrake   = handbrake
 }
 
 function updateBot(bot) {
@@ -982,7 +1015,7 @@ function updateBot(bot) {
 
   const v = bot.physics.vehicle
   const botSpeed  = bot.physics.body.velocity.length()
-  const botForce  = 2400 * bot.speed * Math.max(0.3, 1 - botSpeed / 55)
+  const botForce  = 3900 * bot.speed * Math.max(0.3, 1 - botSpeed / 58)
   const [bFL, bFR] = ackermannAngles(steer)
   v.setSteeringValue(bFL, 0); v.setSteeringValue(bFR, 1)
   v.applyEngineForce(botForce, 2); v.applyEngineForce(botForce, 3)
@@ -998,6 +1031,13 @@ function syncMesh(physics, visual) {
 
   const speed = physics.body.velocity.length()
   const steer = physics.vehicle.wheelInfos[0]?.steering ?? 0
+
+  // Body lean: roll visually into turns — exaggerated in drift for feel
+  const ds = getDriftState(physics.body)
+  const leanTarget = (ds?.drifting ? steer * 0.22 : steer * 0.07)
+  visual.group._leanZ = THREE.MathUtils.lerp(visual.group._leanZ ?? 0, leanTarget, 0.14)
+  const leanQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), visual.group._leanZ)
+  visual.group.quaternion.multiply(leanQuat)
 
   // GLB car: steer pivots indexed [0=FL, 1=FR] — each reads its own physics angle
   if (visual.steerPivots) {
@@ -1027,30 +1067,54 @@ const _lookTarget  = new THREE.Vector3()
 const vignetteEl = document.getElementById('vignette')
 
 function updateCamera() {
-  const p = playerPhysics.body.position
-  const q = playerPhysics.body.quaternion
-  const tq = new THREE.Quaternion(q.x, q.y, q.z, q.w)
+  const p   = playerPhysics.body.position
+  const q   = playerPhysics.body.quaternion
+  const vel = playerPhysics.body.velocity
+  const tq  = new THREE.Quaternion(q.x, q.y, q.z, q.w)
 
+  const horizSpd = Math.sqrt(vel.x * vel.x + vel.z * vel.z)
+  const velNormX = horizSpd > 0.5 ? vel.x / horizSpd : 0
+  const velNormZ = horizSpd > 0.5 ? vel.z / horizSpd : 0
+
+  // Velocity lookahead: at speed, camera drifts ahead along actual travel direction
+  // so you always see where you're going, not just where the car is pointing
+  const lookahead = Math.min(horizSpd / 18, 1) * 0.4
   _camTarget.copy(_chaseOffset).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
-  _lookTarget.copy(_chaseLook).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
+  _camTarget.x += velNormX * lookahead * 7
+  _camTarget.z += velNormZ * lookahead * 7
 
-  camera.position.lerp(_camTarget, 0.08)
+  _lookTarget.copy(_chaseLook).applyQuaternion(tq).add({ x: p.x, y: p.y, z: p.z })
+  _lookTarget.x += velNormX * Math.min(horizSpd / 12, 1) * 5
+  _lookTarget.z += velNormZ * Math.min(horizSpd / 12, 1) * 5
+
+  // Tighter follow at high speed — camera catches up faster
+  const followLerp = THREE.MathUtils.lerp(0.08, 0.15, Math.min(horizSpd / 28, 1))
+  camera.position.lerp(_camTarget, followLerp)
   camera.lookAt(_lookTarget)
 
-  // Camera shake — decays ×0.80 per frame (cosmetic, framerate-independent enough)
+  // Camera shake
   if (_shakeMag > 0.002) {
     camera.position.x += (Math.random() - .5) * _shakeMag
     camera.position.y += (Math.random() - .5) * _shakeMag * .4
     _shakeMag *= 0.80
   }
 
-  // Speed-based FOV: widens at high speed for a rush sensation
-  const spd = playerPhysics.body.velocity.length()
-  camera.fov = THREE.MathUtils.lerp(camera.fov, 72 + spd * 0.28, 0.07)
+  // FOV breathing:
+  //   base + speed ramp → 90° max
+  //   hard braking → snaps to 68° (tunnel-vision commitment)
+  //   drifting → +5° bloom
+  const ds      = getDriftState(playerPhysics.body)
+  const braking = updatePlayer._braking ?? false
+  let targetFov = 72 + horizSpd * 0.36
+  if (ds?.drifting)          targetFov += 5
+  if (braking && horizSpd > 8) targetFov = Math.min(targetFov, 68)
+  targetFov = Math.min(targetFov, 92)
+
+  const fovLerp = braking ? 0.22 : 0.06
+  camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, fovLerp)
   camera.updateProjectionMatrix()
 
-  // Vignette darkens at speed
-  vignetteEl.style.opacity = (0.25 + Math.min(spd / 45, 0.45)).toFixed(2)
+  vignetteEl.style.opacity = (0.25 + Math.min(horizSpd / 45, 0.45)).toFixed(2)
 }
 
 // ── Start sequence via Pixi UI ─────────────────────────────────────────────────
@@ -1070,9 +1134,9 @@ function animate(now) {
   const dt = Math.min((now - prevTime) / 1000, 0.05)
   prevTime = now
 
-  // Apply tire lateral grip before physics step so forces integrate correctly
-  applyCarGrip(playerPhysics.body, playerPhysics.vehicle)
-  bots.forEach(b => applyCarGrip(b.physics.body, b.physics.vehicle))
+  // Apply velocity-bending grip before physics step — pass last frame's handbrake state
+  applyCarGrip(playerPhysics.body, playerPhysics.vehicle, updatePlayer._handbrake ?? false)
+  bots.forEach(b => applyCarGrip(b.physics.body, b.physics.vehicle, false))
 
   world.step(1 / 60, dt, 2)   // 2 substeps instead of 3 — faster, still stable
 
