@@ -319,12 +319,14 @@ function createCarPhysics(spawnPos, spawnAngle) {
   })
 
   // Front: very stiff — ground-hugging, no bounce, instant turn-in
+  // frictionSlip is LOW because our velocity-bending handles lateral grip —
+  // keeping it high causes double-grip and kills speed through corners
   const frontWheel = {
     radius: 0.33,
     directionLocal: new CANNON.Vec3(0, -1, 0),
     suspensionStiffness: 90,
     suspensionRestLength: 0.26,
-    frictionSlip: 2.2,
+    frictionSlip: 0.8,
     dampingRelaxation: 4.0,
     dampingCompression: 7.0,
     maxSuspensionForce: 260000,
@@ -340,7 +342,7 @@ function createCarPhysics(spawnPos, spawnAngle) {
     ...frontWheel,
     suspensionStiffness: 72,
     suspensionRestLength: 0.28,
-    frictionSlip: 2.6,
+    frictionSlip: 1.0,
     dampingRelaxation: 3.2,
     dampingCompression: 5.8,
     rollInfluence: 0.006,
@@ -366,7 +368,7 @@ function createCarPhysics(spawnPos, spawnAngle) {
 const _driftState = new Map()  // body.id → { drifting, driftTimer }
 
 function getDriftState(body) {
-  if (!_driftState.has(body.id)) _driftState.set(body.id, { drifting: false, driftTimer: 0 })
+  if (!_driftState.has(body.id)) _driftState.set(body.id, { drifting: false, driftTimer: 0, noContactTimer: 0, peakSlip: 0 })
   return _driftState.get(body.id)
 }
 
@@ -377,39 +379,60 @@ const _vbRight      = new CANNON.Vec3()
 const _vbImp        = new CANNON.Vec3()
 
 function applyCarGrip(body, vehicle, forceHandbrake = false) {
-  if (!vehicle.wheelInfos.some(w => w.isInContact)) return
+  const inContact = vehicle.wheelInfos.some(w => w.isInContact)
 
   body.quaternion.vmult(_vbFwdLocal, _vbFwd)
   body.quaternion.vmult(_vbRightLocal, _vbRight)
 
   const vel      = body.velocity
-  const fwdSpeed = vel.x * _vbFwd.x   + vel.y * _vbFwd.y   + vel.z * _vbFwd.z
   const latSpeed = vel.x * _vbRight.x + vel.y * _vbRight.y + vel.z * _vbRight.z
   const slipMag  = Math.abs(latSpeed)
   const horizSpd = Math.sqrt(vel.x * vel.x + vel.z * vel.z)
 
   const ds = getDriftState(body)
 
-  // Enter drift: handbrake held, or lateral slip threshold exceeded at speed
-  if (!ds.drifting && (forceHandbrake || (slipMag > 5.0 && horizSpd > 6))) {
+  // Track airborne time — auto-clear drift if wheels lose contact too long (flip/launch recovery)
+  if (!inContact) {
+    ds.noContactTimer += 1 / 60
+    if (ds.noContactTimer > 0.5) ds.drifting = false
+  } else {
+    ds.noContactTimer = 0
+  }
+
+  // Enter drift: both paths require minimum speed (fixes handbrake-at-standstill)
+  if (!ds.drifting && horizSpd > 6 && (forceHandbrake || slipMag > 5.0)) {
     ds.drifting = true
     ds.driftTimer = 0
+    ds.peakSlip = slipMag
+    ds.fromHandbrake = forceHandbrake
   }
-  if (ds.drifting) ds.driftTimer += 1 / 60
 
-  // Exit drift: slip settled AND handbrake released
-  if (ds.drifting && !forceHandbrake && slipMag < 2.2) {
+  if (ds.drifting) {
+    ds.driftTimer += 1 / 60
+    ds.peakSlip = Math.max(ds.peakSlip, slipMag)
+  }
+
+  // Exit drift:
+  //   handbrake-initiated → exit immediately on release (snap back to grip)
+  //   natural oversteer   → exit when slip settles below threshold
+  // Both paths checked even when airborne so a flip can't permanently lock 8% grip.
+  const driftShouldExit = ds.drifting && (
+    ds.fromHandbrake ? !forceHandbrake : (!forceHandbrake && slipMag < 2.2)
+  )
+  if (driftShouldExit) {
     ds.drifting = false
-    // Speed reward: clean exit converts lateral momentum into forward thrust
-    const boost = Math.min(slipMag * 0.06, 0.18)
-    body.velocity.x += _vbFwd.x * Math.abs(latSpeed) * boost
-    body.velocity.z += _vbFwd.z * Math.abs(latSpeed) * boost
+    if (inContact) {
+      const boostMs = Math.min(ds.peakSlip * 0.16, 2.5)   // up to +2.5 m/s (~9 km/h)
+      body.velocity.x += _vbFwd.x * boostMs
+      body.velocity.z += _vbFwd.z * boostMs
+    }
   }
 
-  // Grip strength: near-binary — planted in grip, smooth arc in drift
-  const gripStrength = ds.drifting ? 0.22 : 0.82
-  const corrMag = -latSpeed * body.mass * gripStrength
+  if (!inContact) return   // no grip forces when airborne
 
+  // Grip strength: near-full in grip (goes where pointed), gentle in drift (preserves speed)
+  const gripStrength = ds.drifting ? 0.08 : 0.82
+  const corrMag = -latSpeed * body.mass * gripStrength
   _vbImp.x = _vbRight.x * corrMag
   _vbImp.y = 0
   _vbImp.z = _vbRight.z * corrMag
@@ -418,9 +441,10 @@ function applyCarGrip(body, vehicle, forceHandbrake = false) {
   // Yaw damping — snappy in grip, looser in drift for natural rotation
   body.angularVelocity.y *= ds.drifting ? 0.96 : Math.max(0.82, 1.0 - slipMag * 0.04)
 
-  // Downforce — keeps car glued to track at speed
-  const spd = body.velocity.length()
-  body.force.y -= spd * spd * 0.6
+  // Downforce: horizontal speed only, capped at 0.9× car weight so suspension
+  // never bottoms out at high speed (prevents the bounce-tumble crash)
+  const maxDownforce = body.mass * 20 * 0.9
+  body.force.y -= Math.min(horizSpd * horizSpd * 0.5, maxDownforce)
 }
 
 // Primitive fallback car (box-based)
@@ -788,6 +812,31 @@ const keys = {}
 window.addEventListener('keydown', e => { keys[e.code] = true; initAudio() })
 window.addEventListener('keyup',   e => { keys[e.code] = false })
 
+// ── Car recovery — R-key reset + auto-recover after 2s upside down ────────────
+let _upsideDownTimer = 0
+
+function resetCarToTrack() {
+  const p = playerPhysics.body.position
+  const wpIdx = nearestWaypoint(p.x, p.z)
+  const wp  = waypoints[wpIdx]
+  const wpN = waypoints[(wpIdx + 1) % NUM_WAYPOINTS]
+  const angle = Math.atan2(wpN.x - wp.x, wpN.z - wp.z)
+
+  playerPhysics.body.velocity.set(0, 0, 0)
+  playerPhysics.body.angularVelocity.set(0, 0, 0)
+  playerPhysics.body.position.set(wp.x, 1.0, wp.z)
+  playerPhysics.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), angle)
+
+  // Clear drift state so grip returns immediately after reset
+  const ds = getDriftState(playerPhysics.body)
+  ds.drifting = false; ds.driftTimer = 0; ds.noContactTimer = 0; ds.peakSlip = 0
+  _upsideDownTimer = 0
+}
+
+window.addEventListener('keydown', e => {
+  if (e.code === 'KeyR') resetCarToTrack()
+})
+
 // ── Race state ────────────────────────────────────────────────────────────────
 let raceStarted = false
 let raceOver    = false
@@ -904,17 +953,26 @@ function updatePlayer(dt) {
     nitroCurrent = Math.min(1, nitroCurrent + dt / 9.0)
   }
 
-  // Speed-sensitive steering: stays more responsive at speed than before
+  // Speed-sensitive steering
   const steerMax = 0.48 / (1 + speed * 0.030)
 
-  // Punchy off the line, tapers smoothly — lighter car needs less force but feels snappier
-  let forceMax = 4200 * Math.max(0.3, 1 - speed / 58)
+  // Engine: truly zero at 57 m/s so top speed is governed
+  // Quadratic aero drag keeps the car from drifting past top speed after bumps
+  const bv2 = playerPhysics.body.velocity
+  const hs2 = Math.sqrt(bv2.x * bv2.x + bv2.z * bv2.z)
+  if (hs2 > 0.5) {
+    const drag = hs2 * hs2 * 0.14
+    playerPhysics.body.force.x -= (bv2.x / hs2) * drag
+    playerPhysics.body.force.z -= (bv2.z / hs2) * drag
+  }
+
+  let forceMax = 3300 * Math.max(0, 1 - speed / 57)
   if (nitroActive) forceMax *= 1.55
-  const brakeF = 95   // decisive — hard braking is a committed choice
+  const brakeF = 95
 
   let engine = 0, brake = 0, steer = 0, handbrake = false
   if (keys['KeyW'] || keys['ArrowUp'])    engine =  forceMax
-  if (keys['KeyS'] || keys['ArrowDown']) { engine = -forceMax * 0.35; brake = brakeF }
+  if (keys['KeyS'] || keys['ArrowDown']) { brake = brakeF; if (speed < 1.0) engine = -forceMax * 0.35 }
   if (keys['KeyA'] || keys['ArrowLeft'])  steer = -steerMax
   if (keys['KeyD'] || keys['ArrowRight']) steer =  steerMax
   if (keys['Space']) handbrake = true
@@ -927,10 +985,21 @@ function updatePlayer(dt) {
   v.setBrake(brake, 0); v.setBrake(brake, 1)
   v.setBrake(brake * 0.6, 2); v.setBrake(brake * 0.6, 3)
 
-  // Handbrake: lock rear wheels (weight transfers forward, tail can slide)
+  // Handbrake: near-zero brake force — the rear frictionSlip (1.0) handles
+  // the slide physics. Big brake values on a 90kg car are way too strong.
   if (handbrake) {
     v.applyEngineForce(0, 2); v.applyEngineForce(0, 3)
-    v.setBrake(180, 2); v.setBrake(180, 3)
+    v.setBrake(8, 2); v.setBrake(8, 3)
+  }
+
+  // Auto-recover: if upside down (up vector Y < 0) for 2 continuous seconds, reset
+  const _upVec = new CANNON.Vec3()
+  playerPhysics.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0), _upVec)
+  if (_upVec.y < 0.1) {
+    _upsideDownTimer += dt
+    if (_upsideDownTimer > 2.0) resetCarToTrack()
+  } else {
+    _upsideDownTimer = 0
   }
 
   const p = playerPhysics.body.position
@@ -1134,11 +1203,15 @@ function animate(now) {
   const dt = Math.min((now - prevTime) / 1000, 0.05)
   prevTime = now
 
-  // Apply velocity-bending grip before physics step — pass last frame's handbrake state
-  applyCarGrip(playerPhysics.body, playerPhysics.vehicle, updatePlayer._handbrake ?? false)
-  bots.forEach(b => applyCarGrip(b.physics.body, b.physics.vehicle, false))
-
-  world.step(1 / 60, dt, 2)   // 2 substeps instead of 3 — faster, still stable
+  // Physics substep loop: grip applied once per 1/60s step so behavior is
+  // identical at 30, 60, or 144 fps (fixes framerate-dependent cornering radius)
+  const numSteps = Math.max(1, Math.min(3, Math.round(dt * 60)))
+  const hb = updatePlayer._handbrake ?? false
+  for (let _s = 0; _s < numSteps; _s++) {
+    applyCarGrip(playerPhysics.body, playerPhysics.vehicle, hb)
+    bots.forEach(b => applyCarGrip(b.physics.body, b.physics.vehicle, false))
+    world.step(1 / 60, 1 / 60, 1)
+  }
 
   if (raceStarted && !raceOver) {
     updatePlayer(dt)
