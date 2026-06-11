@@ -18,8 +18,8 @@ function loadGLB(path) {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const TOTAL_LAPS = 3
-const TRACK_WIDTH = 11
-const NUM_WAYPOINTS = 80
+const TRACK_WIDTH = 14
+const NUM_WAYPOINTS = 100
 const CAR_COLORS = [0x1565c0, 0xc62828, 0x2e7d32, 0xe65100]
 const BOT_NAMES = ['BOT REX', 'BOT ZEN', 'BOT KAI']
 const BOT_SPEEDS = [1.0, 0.95, 1.05]
@@ -36,9 +36,9 @@ renderer.outputColorSpace = THREE.SRGBColorSpace
 document.body.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-scene.fog = new THREE.Fog(0xc9e8ff, 120, 400)  // linear fog — less aggressive than exponential
+scene.fog = new THREE.Fog(0xc9e8ff, 160, 540)  // linear fog — less aggressive than exponential
 
-const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 500)
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 650)
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
@@ -68,8 +68,8 @@ sun.castShadow = true
 sun.shadow.mapSize.set(1024, 1024)
 sun.shadow.camera.near = 1
 sun.shadow.camera.far  = 250
-sun.shadow.camera.left = -90; sun.shadow.camera.right  = 90
-sun.shadow.camera.top  =  90; sun.shadow.camera.bottom = -90
+sun.shadow.camera.left = -140; sun.shadow.camera.right  = 140
+sun.shadow.camera.top  =  140; sun.shadow.camera.bottom = -140
 scene.add(sun)
 
 // ── Environment map (IBL reflections on metallic cars) ────────────────────────
@@ -101,20 +101,20 @@ groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2)
 world.addBody(groundBody)
 
 // ── Track Definition ──────────────────────────────────────────────────────────
-// Oval circuit - control points (x, z)
+// Racing circuit — main straight + sweeping T1 + long right side + hairpin + back left + sweeper
 const trackControlPts = [
-  new THREE.Vector3(0,   0,  55),   // south (start/finish)
-  new THREE.Vector3(-30, 0,  48),
-  new THREE.Vector3(-52, 0,  28),
-  new THREE.Vector3(-58, 0,   0),   // west
-  new THREE.Vector3(-52, 0, -28),
-  new THREE.Vector3(-30, 0, -48),
-  new THREE.Vector3(0,   0, -55),   // north
-  new THREE.Vector3(30,  0, -48),
-  new THREE.Vector3(52,  0, -28),
-  new THREE.Vector3(58,  0,   0),   // east
-  new THREE.Vector3(52,  0,  28),
-  new THREE.Vector3(30,  0,  48),
+  new THREE.Vector3(   0, 0,  95),  // S/F line (start of main straight)
+  new THREE.Vector3(  62, 0,  88),  // Turn 1 entry
+  new THREE.Vector3( 108, 0,  52),  // Turn 1 apex (right)
+  new THREE.Vector3( 114, 0,   6),  // T1 exit — long right straight begins
+  new THREE.Vector3(  96, 0, -64),  // hairpin entry
+  new THREE.Vector3(  38, 0, -98),  // hairpin left
+  new THREE.Vector3(  -2, 0, -108), // hairpin apex
+  new THREE.Vector3( -40, 0, -98),  // hairpin right
+  new THREE.Vector3( -96, 0, -64),  // hairpin exit — back section
+  new THREE.Vector3(-114, 0,   6),  // back left straight
+  new THREE.Vector3(-108, 0,  52),  // left sweeper apex
+  new THREE.Vector3( -62, 0,  88),  // sweeper exit, approaching S/F
 ]
 
 const trackCurve = new THREE.CatmullRomCurve3(trackControlPts, true, 'catmullrom', 0.5)
@@ -152,7 +152,22 @@ function buildTrackMesh() {
   geo.setIndex(idx)
   geo.computeVertexNormals()
 
-  const mat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.95, metalness: 0 })
+  // Canvas asphalt texture — random noise gives subtle grain
+  const atCanvas = document.createElement('canvas')
+  atCanvas.width = atCanvas.height = 256
+  const atCtx = atCanvas.getContext('2d')
+  atCtx.fillStyle = '#2a2a2a'
+  atCtx.fillRect(0, 0, 256, 256)
+  for (let i = 0; i < 4000; i++) {
+    const g = 30 + Math.floor(Math.random() * 28)
+    atCtx.fillStyle = `rgb(${g},${g},${g})`
+    atCtx.fillRect(Math.random() * 256, Math.random() * 256, 1 + Math.random() * 3, 1)
+  }
+  const atTex = new THREE.CanvasTexture(atCanvas)
+  atTex.wrapS = atTex.wrapT = THREE.RepeatWrapping
+  atTex.repeat.set(3, 30)
+
+  const mat = new THREE.MeshStandardMaterial({ map: atTex, roughness: 0.93, metalness: 0 })
   const mesh = new THREE.Mesh(geo, mat)
   mesh.receiveShadow = true
   return mesh
@@ -226,26 +241,29 @@ function buildCenterDash() {
 
 // Start/finish line
 function buildStartLine() {
-  const geo = new THREE.PlaneGeometry(TRACK_WIDTH, 1.5)
+  const startPt = trackCurve.getPoint(0)
+  const startTan = trackCurve.getTangentAt(0)
+  const geo = new THREE.PlaneGeometry(TRACK_WIDTH + 4, 2.2)
   const mat = new THREE.MeshStandardMaterial({ color: 0xffffff })
   const mesh = new THREE.Mesh(geo, mat)
   mesh.rotation.x = -Math.PI / 2
-  mesh.position.set(0, 0.04, 55)
+  mesh.rotation.z = -Math.atan2(startTan.x, startTan.z)
+  mesh.position.set(startPt.x, 0.04, startPt.z)
   return mesh
 }
 
 // Ground
 const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(600, 600),
+  new THREE.PlaneGeometry(900, 900),
   new THREE.MeshStandardMaterial({ color: 0x3d8b3d, roughness: 1 })
 )
 ground.rotation.x = -Math.PI / 2
 ground.receiveShadow = true
 scene.add(ground)
 
-// Track barriers — InstancedMesh so 240 barriers = 1 draw call
+// Track barriers — InstancedMesh so barriers = 1 draw call
 function buildBarriers() {
-  const pts   = trackCurve.getPoints(120)
+  const pts   = trackCurve.getPoints(180)
   const geo   = new THREE.BoxGeometry(2.6, 0.9, 0.28)
   const mat   = new THREE.MeshStandardMaterial({ color: 0xbbbbbb, roughness: 0.88, metalness: 0.05 })
   const dummy = new THREE.Object3D()
@@ -273,17 +291,24 @@ function buildBarriers() {
 // Decorative trees around track
 function addTrees() {
   const trunkGeo = new THREE.CylinderGeometry(0.2, 0.3, 1.5, 6)
-  const leafGeo = new THREE.ConeGeometry(1.2, 2.5, 7)
-  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5d4037 })  // Lambert = no specular, cheaper
+  const leafGeo  = new THREE.ConeGeometry(1.2, 2.5, 7)
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5d4037 })
   const leafMat  = new THREE.MeshLambertMaterial({ color: 0x2e7d32 })
   const treePositions = []
-  for (let a = 0; a < Math.PI * 2; a += 0.5) {                        // fewer trees (0.35→0.5)
-    const r = 72 + Math.sin(a * 3) * 5
-    treePositions.push([Math.cos(a) * r, Math.sin(a) * r])
+  // Outer perimeter — ring well outside the new 230m-wide circuit
+  for (let a = 0; a < Math.PI * 2; a += 0.42) {
+    const rx = 148 + Math.sin(a * 2) * 16
+    const rz = 136 + Math.sin(a * 3) * 10
+    treePositions.push([Math.cos(a) * rx, Math.sin(a) * rz])
+  }
+  // Infield cluster — inside the hairpin (roughly centered at 0, -20)
+  for (let a = 0; a < Math.PI * 2; a += 0.7) {
+    const r = 38 + Math.sin(a * 4) * 8
+    treePositions.push([Math.cos(a) * r, -20 + Math.sin(a) * r * 0.8])
   }
   treePositions.forEach(([x, z]) => {
     const t = new THREE.Group()
-    const trunk = new THREE.Mesh(trunkGeo, trunkMat)                   // no castShadow on trees
+    const trunk  = new THREE.Mesh(trunkGeo, trunkMat)
     const leaves = new THREE.Mesh(leafGeo, leafMat)
     leaves.position.y = 2.2
     t.add(trunk, leaves)
@@ -293,6 +318,96 @@ function addTrees() {
   })
 }
 
+// Grandstands along the start/finish straight (outside = +Z from track)
+function buildGrandstands() {
+  const seatColors = [0x1a237e, 0xb71c1c, 0x1a237e, 0x006064, 0xb71c1c, 0x1a237e, 0x006064, 0xb71c1c]
+  const concreteM = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.95 })
+  const darkM     = new THREE.MeshStandardMaterial({ color: 0x424242, roughness: 0.8, metalness: 0.3 })
+
+  // 8 tiered rows — each tier steps back and up
+  for (let r = 0; r < 8; r++) {
+    const tierZ = 109 + r * 2.8
+    const tierY = r * 1.85
+
+    // Concrete step
+    const step = new THREE.Mesh(new THREE.BoxGeometry(88, 0.5, 2.8), concreteM)
+    step.position.set(0, tierY + 0.25, tierZ)
+    step.receiveShadow = true
+    scene.add(step)
+
+    // Colored seats
+    const seatM = new THREE.MeshStandardMaterial({ color: seatColors[r], roughness: 0.55 })
+    const seat  = new THREE.Mesh(new THREE.BoxGeometry(88, 0.9, 1.6), seatM)
+    seat.position.set(0, tierY + 1.05, tierZ)
+    scene.add(seat)
+  }
+
+  // Back concrete wall
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(90, 16, 2.5), concreteM)
+  wall.position.set(0, 8, 134)
+  wall.castShadow = true
+  scene.add(wall)
+
+  // Roof canopy
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(90, 0.9, 22), darkM)
+  roof.position.set(0, 16.2, 123)
+  roof.castShadow = true
+  scene.add(roof)
+
+  // Support columns
+  const colM = new THREE.MeshStandardMaterial({ color: 0x757575, roughness: 0.85 })
+  for (let x = -40; x <= 40; x += 20) {
+    const col = new THREE.Mesh(new THREE.BoxGeometry(1, 16, 1), colM)
+    col.position.set(x, 8, 134)
+    col.castShadow = true
+    scene.add(col)
+  }
+}
+
+// Pit-lane building on the inside of the start straight (−Z side)
+function buildPitBuilding() {
+  const whiteM  = new THREE.MeshStandardMaterial({ color: 0xeceff1, roughness: 0.8 })
+  const darkM   = new THREE.MeshStandardMaterial({ color: 0x263238, roughness: 0.7 })
+  const accentM = new THREE.MeshStandardMaterial({ color: 0x1565c0, roughness: 0.6 })
+
+  // Main building block
+  const body = new THREE.Mesh(new THREE.BoxGeometry(100, 7, 10), whiteM)
+  body.position.set(0, 3.5, 80)
+  body.castShadow = true
+  scene.add(body)
+
+  // Blue accent stripe
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(100, 1.2, 0.2), accentM)
+  stripe.position.set(0, 5.5, 74.9)
+  scene.add(stripe)
+
+  // Garage doors (9 bays)
+  for (let i = -4; i <= 4; i++) {
+    const door = new THREE.Mesh(new THREE.BoxGeometry(8, 4.5, 0.2), darkM)
+    door.position.set(i * 10, 2.5, 74.9)
+    scene.add(door)
+  }
+
+  // Pit lane tarmac (slightly different color from track)
+  const pit = new THREE.Mesh(
+    new THREE.PlaneGeometry(100, 5),
+    new THREE.MeshStandardMaterial({ color: 0x1e1e1e, roughness: 0.88 })
+  )
+  pit.rotation.x = -Math.PI / 2
+  pit.position.set(0, 0.015, 83)
+  scene.add(pit)
+
+  // Overhead pit-lane speed limit sign gantry
+  for (const x of [-35, 35]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.5, 5, 0.5), darkM)
+    post.position.set(x, 2.5, 82)
+    scene.add(post)
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(72, 0.5, 0.5), darkM)
+  beam.position.set(0, 5.2, 82)
+  scene.add(beam)
+}
+
 scene.add(buildTrackMesh())
 scene.add(buildEdgeStripes('left'))
 scene.add(buildEdgeStripes('right'))
@@ -300,6 +415,8 @@ scene.add(buildCenterDash())
 scene.add(buildStartLine())
 buildBarriers()
 addTrees()
+buildGrandstands()
+buildPitBuilding()
 
 // ── Car Builder ───────────────────────────────────────────────────────────────
 function createCarPhysics(spawnPos, spawnAngle) {
