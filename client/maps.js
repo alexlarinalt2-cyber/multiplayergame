@@ -1,0 +1,100 @@
+// Map definitions — pieces listed in track order (checkpoint order follows).
+// Coordinates are grid cells (x, z) + road surface height y (meters) + r (90° rot).
+// gap: true skips the connectivity check (jump landings).
+
+export const MAPS = [
+  {
+    id: 'first-lap',
+    name: 'First Lap',
+    desc: 'Flat and friendly. Learn the grip.',
+    killY: -10,
+    medals: { gold: 13000, silver: 17000, bronze: 25000 },
+    pieces: [
+      { t: 'start',      x: 0, y: 0, z: 0,  r: 0 },
+      { t: 'straight',   x: 0, y: 0, z: 1,  r: 0 },
+      { t: 'straight',   x: 0, y: 0, z: 2,  r: 0 },
+      { t: 'curve-r',    x: 0, y: 0, z: 3,  r: 0 },
+      { t: 'straight',   x: 1, y: 0, z: 3,  r: 1 },
+      { t: 'checkpoint', x: 2, y: 0, z: 3,  r: 1 },
+      { t: 'straight',   x: 3, y: 0, z: 3,  r: 1 },
+      { t: 'curve-r',    x: 4, y: 0, z: 3,  r: 1 },
+      { t: 'straight',   x: 4, y: 0, z: 2,  r: 2 },
+      { t: 'straight',   x: 4, y: 0, z: 1,  r: 2 },
+      { t: 'checkpoint', x: 4, y: 0, z: 0,  r: 2 },
+      { t: 'curve-r',    x: 4, y: 0, z: -1, r: 2 },
+      { t: 'straight',   x: 3, y: 0, z: -1, r: 3 },
+      { t: 'boost',      x: 2, y: 0, z: -1, r: 3 },
+      { t: 'straight',   x: 1, y: 0, z: -1, r: 3 },
+      { t: 'finish',     x: 0, y: 0, z: -1, r: 3 },
+    ],
+  },
+
+  {
+    id: 'airtime',
+    name: 'Airtime',
+    desc: 'Climb, jump the gap, stick the landing.',
+    killY: -12,
+    medals: { gold: 22000, silver: 28000, bronze: 40000 },
+    pieces: [
+      { t: 'start',      x: 0,  y: 0, z: 0,  r: 0 },
+      { t: 'boost',      x: 0,  y: 0, z: 1,  r: 0 },
+      { t: 'ramp',       x: 0,  y: 0, z: 2,  r: 0 },
+      { t: 'ramp',       x: 0,  y: 4, z: 3,  r: 0 },
+      { t: 'straight',   x: 0,  y: 8, z: 4,  r: 0 },
+      { t: 'checkpoint', x: 0,  y: 8, z: 5,  r: 0 },
+      { t: 'kicker',     x: 0,  y: 8, z: 6,  r: 0 },
+      // one-cell gap at z=7 — fly it
+      { t: 'straight',   x: 0,  y: 4, z: 8,  r: 0, gap: true },
+      { t: 'straight',   x: 0,  y: 4, z: 9,  r: 0 },
+      { t: 'straight',   x: 0,  y: 4, z: 10, r: 0 },
+      { t: 'straight',   x: 0,  y: 4, z: 11, r: 0 },
+      { t: 'checkpoint', x: 0,  y: 4, z: 12, r: 0 },
+      { t: 'ramp-down',  x: 0,  y: 4, z: 13, r: 0 },
+      // breathing room after the downhill before the left-hander
+      { t: 'straight',   x: 0,  y: 0, z: 14, r: 0 },
+      { t: 'curve-l',    x: 0,  y: 0, z: 15, r: 0 },
+      { t: 'straight',   x: -1, y: 0, z: 15, r: 3 },
+      { t: 'bank-l',     x: -2, y: 0, z: 15, r: 3 },
+      { t: 'straight',   x: -2, y: 0, z: 14, r: 2 },
+      { t: 'boost',      x: -2, y: 0, z: 13, r: 2 },
+      { t: 'finish',     x: -2, y: 0, z: 12, r: 2 },
+    ],
+  },
+
+  {
+    id: 'loop-city',
+    name: 'Loop City',
+    desc: 'Full speed into the loop. Do not lift.',
+    killY: -12,
+    medals: { gold: 28000, silver: 36000, bronze: 50000 },
+    pieces: [
+      { t: 'start',      x: 0, y: 0, z: 0,  r: 0 },
+      { t: 'boost',      x: 0, y: 0, z: 1,  r: 0 },
+      { t: 'boost',      x: 0, y: 0, z: 2,  r: 0 },
+      // loop spans cells z=3..4 and exits one column over (x=1)
+      { t: 'loop',       x: 0, y: 0, z: 3,  r: 0 },
+      // long run-out — the loop spits you out fast
+      { t: 'straight',   x: 1, y: 0, z: 5,  r: 0 },
+      { t: 'straight',   x: 1, y: 0, z: 6,  r: 0 },
+      { t: 'checkpoint', x: 1, y: 0, z: 7,  r: 0 },
+      { t: 'straight',   x: 1, y: 0, z: 8,  r: 0 },
+      { t: 'curve-r',    x: 1, y: 0, z: 9,  r: 0 },
+      { t: 'straight',   x: 2, y: 0, z: 9,  r: 1 },
+      { t: 'bank-r',     x: 3, y: 0, z: 9,  r: 1 },
+      // boost into the climb — you need the speed to clear the jump
+      { t: 'boost',      x: 3, y: 0, z: 8,  r: 2 },
+      { t: 'ramp',       x: 3, y: 0, z: 7,  r: 2 },
+      { t: 'straight',   x: 3, y: 4, z: 6,  r: 2 },
+      { t: 'kicker',     x: 3, y: 4, z: 5,  r: 2 },
+      // one-cell gap at z=4 — drop back to ground level
+      { t: 'straight',   x: 3, y: 0, z: 3,  r: 2, gap: true },
+      { t: 'straight',   x: 3, y: 0, z: 2,  r: 2 },
+      { t: 'straight',   x: 3, y: 0, z: 1,  r: 2 },
+      { t: 'checkpoint', x: 3, y: 0, z: 0,  r: 2 },
+      { t: 'curve-r',    x: 3, y: 0, z: -1, r: 2 },
+      { t: 'straight',   x: 2, y: 0, z: -1, r: 3 },
+      { t: 'straight',   x: 1, y: 0, z: -1, r: 3 },
+      { t: 'finish',     x: 0, y: 0, z: -1, r: 3 },
+    ],
+  },
+]
