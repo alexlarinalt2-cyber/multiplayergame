@@ -3,63 +3,115 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Circuit Racer</title>
+  <title>PolyRacer — Time Trial</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+    body { background: #87c5eb; overflow: hidden; font-family: 'Segoe UI', system-ui, sans-serif; user-select: none; }
     canvas { display: block; }
 
     #vignette {
       position: fixed; inset: 0; pointer-events: none; z-index: 8;
-      background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.82) 100%);
-      opacity: 0.28; transition: opacity 0.15s;
-    }
-    #nitro-glow {
-      position: fixed; inset: 0; pointer-events: none; z-index: 7;
-      background: radial-gradient(ellipse at center, transparent 50%, rgba(255,90,0,0.5) 100%);
-      opacity: 0; transition: opacity 0.1s;
+      background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.55) 100%);
+      opacity: 0.2; transition: opacity 0.15s;
     }
 
-    /* ── Race results overlay ─────────────────── */
-    #race-results {
-      position: fixed; inset: 0;
+    /* ── HUD ── */
+    .hud { position: fixed; z-index: 10; color: #fff; pointer-events: none;
+           text-shadow: 0 2px 8px rgba(0,0,0,0.55); }
+    #hud-timer {
+      top: 18px; left: 50%; transform: translateX(-50%);
+      font-size: 2.6rem; font-weight: 900; letter-spacing: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+    #hud-cp    { top: 78px; left: 50%; transform: translateX(-50%); font-size: 1rem; font-weight: 700; color: #cde9ff; }
+    #hud-best  { top: 20px; right: 24px; font-size: 1rem; font-weight: 700; color: #ffe082; text-align: right; }
+    #hud-speed { bottom: 22px; right: 28px; font-size: 2.2rem; font-weight: 900; }
+    #hud-speed span { font-size: 0.95rem; font-weight: 600; color: #d6ecff; }
+    #hud-hint  { bottom: 18px; left: 50%; transform: translateX(-50%); font-size: 0.8rem; color: rgba(255,255,255,0.75); }
+    #hud-msg {
+      top: 34%; left: 50%; transform: translate(-50%, -50%);
+      font-size: 4.5rem; font-weight: 900; letter-spacing: 6px;
+      opacity: 0; transition: opacity 0.18s;
+    }
+    #hud-split {
+      top: 122px; left: 50%; transform: translateX(-50%);
+      font-size: 1.3rem; font-weight: 800; opacity: 0; transition: opacity 0.25s;
+    }
+
+    /* ── Overlays ── */
+    .overlay {
+      position: fixed; inset: 0; z-index: 100;
       display: none; align-items: center; justify-content: center;
-      background: rgba(0,0,0,0.78); z-index: 200;
-      backdrop-filter: blur(6px);
+      background: rgba(10, 18, 32, 0.82); backdrop-filter: blur(8px);
     }
-    #race-results.visible { display: flex; }
-    .results-card {
-      background: rgba(8,10,22,0.97);
-      border: 1px solid rgba(255,255,255,0.13);
-      border-radius: 22px; padding: 48px 72px;
-      text-align: center; color: #fff;
-      box-shadow: 0 24px 80px rgba(0,0,0,0.95);
+    .overlay.visible { display: flex; }
+    .card {
+      background: rgba(12, 18, 34, 0.97);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 20px; padding: 40px 56px;
+      color: #fff; text-align: center;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.9);
+      max-width: 560px;
     }
-    .results-flag { font-size: 4rem; margin-bottom: 10px; }
-    #results-pos  { font-size: 3.2rem; font-weight: 900; color: #f9c74f; margin-bottom: 6px; letter-spacing: 2px; }
-    #results-time { font-size: 1.25rem; color: #aaa; margin-bottom: 6px; }
-    #results-pb   { font-size: 0.9rem; color: #888; margin-bottom: 28px; min-height: 1.2em; }
-    #results-btn  {
-      background: #e63946; color: #fff; border: none;
-      padding: 16px 48px; border-radius: 10px;
-      font-size: 1.1rem; font-weight: 900; cursor: pointer;
-      letter-spacing: 3px; transition: background 0.2s, transform 0.1s;
-      pointer-events: auto;
+    .card h1 { font-size: 2.2rem; font-weight: 900; letter-spacing: 3px; margin-bottom: 6px; }
+    .card .sub { color: #8fb8d8; font-size: 0.9rem; margin-bottom: 26px; }
+
+    .map-btn {
+      display: block; width: 100%; text-align: left;
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px; padding: 14px 20px; margin-bottom: 12px;
+      color: #fff; cursor: pointer; font-size: 1rem;
+      transition: background 0.15s, transform 0.1s;
     }
-    #results-btn:hover { background: #b71c1c; transform: scale(1.05); }
+    .map-btn:hover { background: rgba(255,255,255,0.14); transform: translateX(4px); }
+    .map-btn .mname { font-weight: 800; font-size: 1.15rem; letter-spacing: 1px; }
+    .map-btn .mdesc { color: #9fc4e0; font-size: 0.82rem; margin-top: 2px; }
+    .map-btn .mbest { float: right; color: #ffe082; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+    #fin-time  { font-size: 3rem; font-weight: 900; color: #ffe082; font-variant-numeric: tabular-nums; }
+    #fin-medal { font-size: 1.6rem; font-weight: 800; margin: 8px 0 4px; }
+    #fin-pb    { color: #9fc4e0; font-size: 0.95rem; margin-bottom: 26px; min-height: 1.2em; }
+    .btn-row button {
+      background: #2196f3; color: #fff; border: none;
+      padding: 14px 36px; border-radius: 10px; margin: 0 8px;
+      font-size: 1rem; font-weight: 800; letter-spacing: 2px; cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn-row button:hover { background: #1565c0; transform: scale(1.05); }
+    .btn-row button.alt { background: rgba(255,255,255,0.12); }
+    .btn-row button.alt:hover { background: rgba(255,255,255,0.22); }
   </style>
 </head>
 <body>
 
 <div id="vignette"></div>
-<div id="nitro-glow"></div>
-<div id="race-results">
-  <div class="results-card">
-    <div class="results-flag">&#127937;</div>
-    <div id="results-pos">P1</div>
-    <div id="results-time">0:00.00</div>
-    <div id="results-pb"></div>
-    <button id="results-btn" onclick="location.reload()">RACE AGAIN</button>
+
+<div id="hud-timer" class="hud">0:00.00</div>
+<div id="hud-cp"    class="hud"></div>
+<div id="hud-split" class="hud"></div>
+<div id="hud-best"  class="hud"></div>
+<div id="hud-speed" class="hud">0 <span>km/h</span></div>
+<div id="hud-hint"  class="hud">R — respawn &nbsp;•&nbsp; Enter — restart &nbsp;•&nbsp; Esc — maps</div>
+<div id="hud-msg"   class="hud"></div>
+
+<div id="menu" class="overlay visible">
+  <div class="card">
+    <h1>POLYRACER</h1>
+    <div class="sub">TIME TRIAL — pick a track</div>
+    <div id="map-list"></div>
+  </div>
+</div>
+
+<div id="finish" class="overlay">
+  <div class="card">
+    <div style="font-size:3rem">&#127937;</div>
+    <div id="fin-time">0:00.00</div>
+    <div id="fin-medal"></div>
+    <div id="fin-pb"></div>
+    <div class="btn-row">
+      <button id="fin-retry">RETRY</button>
+      <button id="fin-menu" class="alt">TRACKS</button>
+    </div>
   </div>
 </div>
 
@@ -68,16 +120,10 @@
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
     "three/examples/jsm/loaders/GLTFLoader.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
-    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
-    "three/examples/jsm/environments/RoomEnvironment.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/environments/RoomEnvironment.js",
-    "three/examples/jsm/objects/Sky.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/objects/Sky.js",
-    "three/examples/jsm/postprocessing/EffectComposer.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js",
-    "three/examples/jsm/postprocessing/RenderPass.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js",
-    "three/examples/jsm/postprocessing/UnrealBloomPass.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js",
-    "pixi.js": "https://esm.sh/pixi.js@7"
+    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
   }
 }
 </script>
-<script type="module" src="racing-main.js"></script>
+<script type="module" src="polytrack-main.js"></script>
 </body>
 </html>

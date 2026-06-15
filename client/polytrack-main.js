@@ -663,7 +663,7 @@ function onFinish() {
 }
 
 document.getElementById('fin-retry').onclick = () => location.reload()
-document.getElementById('fin-menu').onclick  = () => { location.href = 'polytrack.html' }
+document.getElementById('fin-menu').onclick  = () => { location.href = '/' }
 
 // ── Audio (synth engine + screech) ────────────────────────────────────────────
 let audioCtx = null, engineOsc = null, engineGain = null, screechGain = null
@@ -755,7 +755,7 @@ window.addEventListener('keydown', e => {
     hudMsg('RESPAWN', 500)
   }
   if (e.code === 'Enter' && state !== 'countdown') fullRestart()
-  if (e.code === 'Escape') location.href = 'polytrack.html'
+  if (e.code === 'Escape') location.href = '/'
 })
 window.addEventListener('keyup', e => { keys[e.code] = false })
 window.addEventListener('blur', () => { for (const k in keys) keys[k] = false })

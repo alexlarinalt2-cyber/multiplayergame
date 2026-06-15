@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Circuit Racer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+    canvas { display: block; }
+
+    #vignette {
+      position: fixed; inset: 0; pointer-events: none; z-index: 8;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.82) 100%);
+      opacity: 0.28; transition: opacity 0.15s;
+    }
+    #nitro-glow {
+      position: fixed; inset: 0; pointer-events: none; z-index: 7;
+      background: radial-gradient(ellipse at center, transparent 50%, rgba(255,90,0,0.5) 100%);
+      opacity: 0; transition: opacity 0.1s;
+    }
+
+    /* ── Race results overlay ─────────────────── */
+    #race-results {
+      position: fixed; inset: 0;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.78); z-index: 200;
+      backdrop-filter: blur(6px);
+    }
+    #race-results.visible { display: flex; }
+    .results-card {
+      background: rgba(8,10,22,0.97);
+      border: 1px solid rgba(255,255,255,0.13);
+      border-radius: 22px; padding: 48px 72px;
+      text-align: center; color: #fff;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.95);
+    }
+    .results-flag { font-size: 4rem; margin-bottom: 10px; }
+    #results-pos  { font-size: 3.2rem; font-weight: 900; color: #f9c74f; margin-bottom: 6px; letter-spacing: 2px; }
+    #results-time { font-size: 1.25rem; color: #aaa; margin-bottom: 6px; }
+    #results-pb   { font-size: 0.9rem; color: #888; margin-bottom: 28px; min-height: 1.2em; }
+    #results-btn  {
+      background: #e63946; color: #fff; border: none;
+      padding: 16px 48px; border-radius: 10px;
+      font-size: 1.1rem; font-weight: 900; cursor: pointer;
+      letter-spacing: 3px; transition: background 0.2s, transform 0.1s;
+      pointer-events: auto;
+    }
+    #results-btn:hover { background: #b71c1c; transform: scale(1.05); }
+  </style>
+</head>
+<body>
+
+<div id="vignette"></div>
+<div id="nitro-glow"></div>
+<div id="race-results">
+  <div class="results-card">
+    <div class="results-flag">&#127937;</div>
+    <div id="results-pos">P1</div>
+    <div id="results-time">0:00.00</div>
+    <div id="results-pb"></div>
+    <button id="results-btn" onclick="location.reload()">RACE AGAIN</button>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/examples/jsm/loaders/GLTFLoader.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
+    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
+    "three/examples/jsm/environments/RoomEnvironment.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/environments/RoomEnvironment.js",
+    "three/examples/jsm/objects/Sky.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/objects/Sky.js",
+    "three/examples/jsm/postprocessing/EffectComposer.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js",
+    "three/examples/jsm/postprocessing/RenderPass.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js",
+    "three/examples/jsm/postprocessing/UnrealBloomPass.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js",
+    "pixi.js": "https://esm.sh/pixi.js@7"
+  }
+}
+</script>
+<script type="module" src="racing-main.js"></script>
+</body>
+</html>
