@@ -52,8 +52,17 @@ renderer.outputColorSpace = THREE.SRGBColorSpace
 document.body.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0x87c5eb)
-scene.fog = new THREE.Fog(0x87c5eb, 260, 700)
+// gradient sky: deep blue at zenith → pale at horizon
+const _skyC = document.createElement('canvas')
+_skyC.width = 2; _skyC.height = 512
+const _skyCtx = _skyC.getContext('2d')
+const _skyG = _skyCtx.createLinearGradient(0, 0, 0, 512)
+_skyG.addColorStop(0,   '#3a7baa')
+_skyG.addColorStop(0.5, '#87c5eb')
+_skyG.addColorStop(1,   '#c9e8f5')
+_skyCtx.fillStyle = _skyG; _skyCtx.fillRect(0, 0, 2, 512)
+scene.background = new THREE.CanvasTexture(_skyC)
+scene.fog = new THREE.Fog(0xc9e8f5, 220, 650)
 
 const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 900)
 
@@ -99,11 +108,33 @@ sun.shadow.camera.top  =  span; sun.shadow.camera.bottom = -span
 // "Sea" far below — visual depth reference when falling
 const sea = new THREE.Mesh(
   new THREE.PlaneGeometry(3000, 3000),
-  new THREE.MeshLambertMaterial({ color: 0x4fa3d1 })
+  new THREE.MeshLambertMaterial({ color: 0x1e88e5, flatShading: true })
 )
 sea.rotation.x = -Math.PI / 2
 sea.position.set(midX, MAP.killY - 28, midZ)
 scene.add(sea)
+
+// Decorative low-poly hills ringing the course
+;(function addHills() {
+  const mats = [0x4caf50, 0x388e3c, 0x66bb6a, 0x2e7d32, 0x43a047].map(
+    c => new THREE.MeshLambertMaterial({ color: c, flatShading: true })
+  )
+  for (let i = 0; i < 22; i++) {
+    const a  = (i / 22) * Math.PI * 2 + 0.25
+    const d  = 165 + (i % 4) * 32
+    const hx = midX + Math.cos(a) * d
+    const hz = midZ + Math.sin(a) * d
+    const h  = 24 + (i % 5) * 14
+    const rx = 22 + (i % 4) * 9
+    const sides = 5 + (i % 3)
+    const geo = (i % 3 === 0)
+      ? new THREE.ConeGeometry(rx, h, sides)
+      : new THREE.CylinderGeometry(rx * 0.25, rx, h * 0.75, sides)
+    const mesh = new THREE.Mesh(geo, mats[i % mats.length])
+    mesh.position.set(hx, h / 2 - 4, hz)
+    scene.add(mesh)
+  }
+})()
 
 // Collect all segments → one static physics body + instanced visuals
 const allSegs = []
@@ -116,13 +147,13 @@ const _segScale = new THREE.Vector3(), _segM = new THREE.Matrix4()
 
 const roadInst = new THREE.InstancedMesh(
   new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshLambertMaterial({ color: 0x37474f }),
+  new THREE.MeshLambertMaterial({ color: 0x90a4ae, flatShading: true }),
   allSegs.length
 )
 roadInst.receiveShadow = true
 const edgeInst = new THREE.InstancedMesh(
   new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshLambertMaterial({ color: 0xeceff1 }),
+  new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }),
   allSegs.length * 2
 )
 
@@ -166,7 +197,7 @@ const cpGateMats = []
 let checkpointCount = 0
 
 function buildGate(w, color) {
-  const mat = new THREE.MeshLambertMaterial({ color })
+  const mat = new THREE.MeshLambertMaterial({ color, flatShading: true })
   const g = new THREE.Group()
   const postGeo = new THREE.BoxGeometry(0.6, 6.5, 0.6)
   for (const side of [-1, 1]) {
@@ -198,7 +229,7 @@ walk.forEach(w => {
   if (t === 'boost') {
     const pad = new THREE.Mesh(
       new THREE.PlaneGeometry(ROAD_W - 2.5, 13),
-      new THREE.MeshLambertMaterial({ color: 0xff9100, emissive: 0xb35900 })
+      new THREE.MeshLambertMaterial({ color: 0xff9100, emissive: 0xb35900, flatShading: true })
     )
     pad.rotation.x = -Math.PI / 2
     pad.position.set(w.center[0], w.center[1] + 0.04, w.center[2])
@@ -452,8 +483,8 @@ const gltfLoader = new GLTFLoader()
 function makePrimitiveCar(color, ghost = false) {
   const g = new THREE.Group()
   const mat = ghost
-    ? new THREE.MeshLambertMaterial({ color: 0x66ccff, transparent: true, opacity: 0.35, depthWrite: false })
-    : new THREE.MeshLambertMaterial({ color })
+    ? new THREE.MeshLambertMaterial({ color: 0x66ccff, transparent: true, opacity: 0.35, depthWrite: false, flatShading: true })
+    : new THREE.MeshLambertMaterial({ color, flatShading: true })
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.76, 0.48, 4.0), mat)
   body.position.y = 0.3
   body.castShadow = !ghost
@@ -463,7 +494,7 @@ function makePrimitiveCar(color, ghost = false) {
   g.add(cabin)
   if (!ghost) {
     const wGeo = new THREE.CylinderGeometry(0.33, 0.33, 0.28, 12)
-    const wMat = new THREE.MeshLambertMaterial({ color: 0x212121 })
+    const wMat = new THREE.MeshLambertMaterial({ color: 0x212121, flatShading: true })
     ;[[-0.96, 1.5], [0.96, 1.5], [-0.96, -1.4], [0.96, -1.4]].forEach(([x, z]) => {
       const w = new THREE.Mesh(wGeo, wMat)
       w.rotation.z = Math.PI / 2
@@ -504,7 +535,7 @@ let ghostGroup  = null
   // Ghost = translucent clone of the same model
   if (ghostGroup) {
     const gModel = model.clone()
-    const gMat = new THREE.MeshLambertMaterial({ color: 0x66ccff, transparent: true, opacity: 0.32, depthWrite: false })
+    const gMat = new THREE.MeshLambertMaterial({ color: 0x66ccff, transparent: true, opacity: 0.32, depthWrite: false, flatShading: true })
     gModel.traverse(c => { if (c.isMesh) { c.material = gMat; c.castShadow = false } })
     const gWrap = new THREE.Group()
     gWrap.add(gModel)
