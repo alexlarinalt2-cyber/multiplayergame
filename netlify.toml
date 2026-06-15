@@ -1,2 +1,7 @@
 [build]
   publish = "client"
+
+[[redirects]]
+  from = "/"
+  to = "/polytrack.html"
+  status = 302
